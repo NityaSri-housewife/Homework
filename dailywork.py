@@ -44,9 +44,7 @@ if 'resistance_zone' not in st.session_state:
 try:
     TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM"]["BOT_TOKEN"]
     TELEGRAM_CHAT_ID = st.secrets["TELEGRAM"]["CHAT_ID"]
-except:
-    TELEGRAM_BOT_TOKEN = ""
-    TELEGRAM_CHAT_ID = ""
+
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -63,10 +61,7 @@ try:
     EMAIL_USER = st.secrets["EMAIL"]["USER"]
     EMAIL_PASSWORD = st.secrets["EMAIL"]["PASSWORD"]
     EMAIL_RECEIVER = st.secrets["EMAIL"]["RECEIVER"]
-except:
-    EMAIL_USER = ""
-    EMAIL_PASSWORD = ""
-    EMAIL_RECEIVER = ""
+
 
 def send_email(subject, body, attachment=None, filename=None):
     try:
