@@ -40,16 +40,28 @@ if 'support_zone' not in st.session_state:
 if 'resistance_zone' not in st.session_state:
     st.session_state.resistance_zone = (None, None)
 
-# === Telegram Config ===
-TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM"]["BOT_TOKEN"]
-TELEGRAM_CHAT_ID = st.secrets["TELEGRAM"]["CHAT_ID"]
+# Telegram Configuration (recommended)
+if 'telegram_configured' not in st.session_state:
+    try:
+        st.session_state.telegram_bot_token = st.secrets["TELEGRAM"]["BOT_TOKEN"]
+        st.session_state.telegram_chat_id = st.secrets["TELEGRAM"]["CHAT_ID"]
+        st.session_state.telegram_configured = True
+    except:
+        st.session_state.telegram_configured = False
+        st.warning("Telegram notifications disabled - missing secrets")
 
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    response = requests.post(url, data=data)
-    if response.status_code != 200:
-        st.warning("⚠️ Telegram message failed.")
+    if not getattr(st.session_state, 'telegram_configured', False):
+        return
+        
+    try:
+        url = f"https://api.telegram.org/bot{st.session_state.telegram_bot_token}/sendMessage"
+        data = {"chat_id": st.session_state.telegram_chat_id, "text": message}
+        response = requests.post(url, data=data, timeout=5)
+        if response.status_code != 200:
+            print(f"Telegram API error: {response.text}")
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 # === Email Config ===
 EMAIL_USER = st.secrets["EMAIL"]["USER"]
