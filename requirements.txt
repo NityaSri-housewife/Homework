@@ -2,10 +2,12 @@ streamlit==1.33.0
 streamlit-autorefresh==1.0.1
 requests==2.31.0
 pandas==2.1.4
+plotly==5.22.0
 numpy==1.26.4
-python-dateutil==2.8.2
+scipy==1.13.1
 pytz==2024.1
-scipy==1.11.4
-plotly==5.18.0
-dhanhq==1.0.3
-openpyxl==3.1.2
+markdown-it-py==3.0.0
+mdurl==0.1.2
+pygments==2.19.2
+rich==14.1.0
+git+https://github.com/dhanrajyadav/dhanhq-python.git
