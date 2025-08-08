@@ -41,53 +41,41 @@ if 'resistance_zone' not in st.session_state:
     st.session_state.resistance_zone = (None, None)
 
 # === Telegram Config ===
-try:
-    TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM"]["BOT_TOKEN"]
-    TELEGRAM_CHAT_ID = st.secrets["TELEGRAM"]["CHAT_ID"]
-
+TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM"]["BOT_TOKEN"]
+TELEGRAM_CHAT_ID = st.secrets["TELEGRAM"]["CHAT_ID"]
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    try:
-        response = requests.post(url, data=data)
-        if response.status_code != 200:
-            st.warning("⚠️ Telegram message failed.")
-    except Exception as e:
-        st.error(f"❌ Telegram error: {e}")
+    response = requests.post(url, data=data)
+    if response.status_code != 200:
+        st.warning("⚠️ Telegram message failed.")
 
 # === Email Config ===
-try:
-    EMAIL_USER = st.secrets["EMAIL"]["USER"]
-    EMAIL_PASSWORD = st.secrets["EMAIL"]["PASSWORD"]
-    EMAIL_RECEIVER = st.secrets["EMAIL"]["RECEIVER"]
-
+EMAIL_USER = st.secrets["EMAIL"]["USER"]
+EMAIL_PASSWORD = st.secrets["EMAIL"]["PASSWORD"]
+EMAIL_RECEIVER = st.secrets["EMAIL"]["RECEIVER"]
 
 def send_email(subject, body, attachment=None, filename=None):
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_USER
-        msg['To'] = EMAIL_RECEIVER
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_USER
+    msg['To'] = EMAIL_RECEIVER
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
 
-        if attachment and filename:
-            part = MIMEBase('application', 'octet-stream')
-            part.set_payload(attachment)
-            encoders.encode_base64(part)
-            part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-            msg.attach(part)
+    if attachment and filename:
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(attachment)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+        msg.attach(part)
 
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASSWORD)
-        text = msg.as_string()
-        server.sendmail(EMAIL_USER, EMAIL_RECEIVER, text)
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"Email error: {e}")
-        return False
+    server = smtplib.SMTP('smtp.gmail.com', 587)
+    server.starttls()
+    server.login(EMAIL_USER, EMAIL_PASSWORD)
+    text = msg.as_string()
+    server.sendmail(EMAIL_USER, EMAIL_RECEIVER, text)
+    server.quit()
 
 # === Dhan Trading Config ===
 if 'dhan' not in st.session_state:
