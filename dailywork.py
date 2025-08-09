@@ -64,30 +64,43 @@ def send_telegram_message(message):
         print(f"Telegram error: {e}")
 
 # === Email Config ===
-EMAIL_USER = st.secrets["EMAIL"]["USER"]
-EMAIL_PASSWORD = st.secrets["EMAIL"]["PASSWORD"]
-EMAIL_RECEIVER = st.secrets["EMAIL"]["RECEIVER"]
+try:
+    EMAIL_USER = st.secrets["EMAIL"]["USER"]
+    EMAIL_PASSWORD = st.secrets["EMAIL"]["PASSWORD"]
+    EMAIL_RECEIVER = st.secrets["EMAIL"]["RECEIVER"]
+    EMAIL_CONFIGURED = True
+except:
+    EMAIL_CONFIGURED = False
+    st.warning("Email notifications disabled - missing secrets")
 
 def send_email(subject, body, attachment=None, filename=None):
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_USER
-    msg['To'] = EMAIL_RECEIVER
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
+    if not EMAIL_CONFIGURED:
+        return False
+        
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_USER
+        msg['To'] = EMAIL_RECEIVER
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
 
-    if attachment and filename:
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(attachment)
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-        msg.attach(part)
+        if attachment and filename:
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(attachment)
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+            msg.attach(part)
 
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.starttls()
-    server.login(EMAIL_USER, EMAIL_PASSWORD)
-    text = msg.as_string()
-    server.sendmail(EMAIL_USER, EMAIL_RECEIVER, text)
-    server.quit()
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASSWORD)
+        text = msg.as_string()
+        server.sendmail(EMAIL_USER, EMAIL_RECEIVER, text)
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Email failed: {e}")
+        return False
 
 # === Dhan Trading Config ===
 if 'dhan' not in st.session_state:
@@ -327,7 +340,7 @@ def handle_export_data(df_summary, spot_price):
             )
             
             # Send email with the report
-            if EMAIL_USER and EMAIL_PASSWORD and EMAIL_RECEIVER:
+            if EMAIL_CONFIGURED:
                 if send_email(
                     subject=f"Nifty Options Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                     body="Please find attached the Nifty Options Analysis Report.",
