@@ -11,4 +11,4 @@ USER = "your_email@gmail.com"
 PASSWORD = "your_email_password"
 RECEIVER = "receiver_email@example.com"
 
-AUTO_TRADE = false
+AUTO_TRADE = true
