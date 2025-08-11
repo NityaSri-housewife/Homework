@@ -9,12 +9,6 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
-from dhanhq import dhanhq
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email.mime.text import MIMEText
-from email import encoders
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -40,150 +34,19 @@ if 'support_zone' not in st.session_state:
 if 'resistance_zone' not in st.session_state:
     st.session_state.resistance_zone = (None, None)
 
-# Telegram Configuration (recommended)
-if 'telegram_configured' not in st.session_state:
-    try:
-        st.session_state.telegram_bot_token = st.secrets["TELEGRAM"]["BOT_TOKEN"]
-        st.session_state.telegram_chat_id = st.secrets["TELEGRAM"]["CHAT_ID"]
-        st.session_state.telegram_configured = True
-    except:
-        st.session_state.telegram_configured = False
-        st.warning("Telegram notifications disabled - missing secrets")
+# === Telegram Config ===
+TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
+TELEGRAM_CHAT_ID = "5704496584"
 
 def send_telegram_message(message):
-    if not getattr(st.session_state, 'telegram_configured', False):
-        return
-        
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        url = f"https://api.telegram.org/bot{st.session_state.telegram_bot_token}/sendMessage"
-        data = {"chat_id": st.session_state.telegram_chat_id, "text": message}
-        response = requests.post(url, data=data, timeout=5)
+        response = requests.post(url, data=data)
         if response.status_code != 200:
-            print(f"Telegram API error: {response.text}")
+            st.warning("⚠️ Telegram message failed.")
     except Exception as e:
-        print(f"Telegram error: {e}")
-
-# === Email Config ===
-try:
-    EMAIL_USER = st.secrets["EMAIL"]["USER"]
-    EMAIL_PASSWORD = st.secrets["EMAIL"]["PASSWORD"]
-    EMAIL_RECEIVER = st.secrets["EMAIL"]["RECEIVER"]
-    EMAIL_CONFIGURED = True
-except:
-    EMAIL_CONFIGURED = False
-    st.warning("Email notifications disabled - missing secrets")
-
-def send_email(subject, body, attachment=None, filename=None):
-    if not EMAIL_CONFIGURED:
-        return False
-        
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_USER
-        msg['To'] = EMAIL_RECEIVER
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-
-        if attachment and filename:
-            part = MIMEBase('application', 'octet-stream')
-            part.set_payload(attachment)
-            encoders.encode_base64(part)
-            part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-            msg.attach(part)
-
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASSWORD)
-        text = msg.as_string()
-        server.sendmail(EMAIL_USER, EMAIL_RECEIVER, text)
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"Email failed: {e}")
-        return False
-
-# === Dhan Trading Config ===
-if 'dhan' not in st.session_state:
-    try:
-        st.session_state.dhan = dhanhq(
-            client_id=st.secrets["DHAN"]["CLIENT_ID"],
-            access_token=st.secrets["DHAN"]["ACCESS_TOKEN"]
-        )
-    except:
-        st.session_state.dhan = None
-        st.warning("Dhan API credentials not configured")
-
-def place_dhan_order_with_sltp(symbol, exchange_segment, transaction_type, quantity, order_type, price=0, 
-                              target_percent=None, stoploss_percent=None, underlying_price=None):
-    """Enhanced order placement function with automatic SL and Target"""
-    if not st.session_state.dhan:
-        st.error("Dhan API not initialized")
-        return False
-    
-    try:
-        # Place main order
-        order_params = {
-            "security_id": symbol,
-            "exchange_segment": exchange_segment,
-            "transaction_type": transaction_type,
-            "quantity": quantity,
-            "order_type": order_type,
-            "product_type": "INTRADAY",
-            "price": price
-        }
-        
-        response = st.session_state.dhan.place_order(**order_params)
-        if not response.get('status', '').lower() == 'success':
-            return False
-        
-        # Calculate target and stoploss prices if percentages are provided
-        if target_percent and stoploss_percent and underlying_price:
-            if 'CE' in symbol:  # For CALL options
-                target_price = round(price * (1 + target_percent/100), 2)
-                stoploss_price = round(price * (1 - stoploss_percent/100), 2)
-            else:  # For PUT options
-                target_price = round(price * (1 + target_percent/100), 2)
-                stoploss_price = round(price * (1 - stoploss_percent/100), 2)
-            
-            # Place target order (LIMIT)
-            target_params = {
-                "security_id": symbol,
-                "exchange_segment": exchange_segment,
-                "transaction_type": "SELL",
-                "quantity": quantity,
-                "order_type": "LIMIT",
-                "product_type": "INTRADAY",
-                "price": target_price,
-                "disclosed_quantity": quantity,
-                "after_market_order": False
-            }
-            target_response = st.session_state.dhan.place_order(**target_params)
-            
-            # Place stoploss order (SL-M)
-            sl_params = {
-                "security_id": symbol,
-                "exchange_segment": exchange_segment,
-                "transaction_type": "SELL",
-                "quantity": quantity,
-                "order_type": "SL-M",
-                "product_type": "INTRADAY",
-                "trigger_price": stoploss_price,
-                "price": stoploss_price * 0.995,  # Slightly below trigger
-                "disclosed_quantity": quantity,
-                "after_market_order": False
-            }
-            sl_response = st.session_state.dhan.place_order(**sl_params)
-            
-            return all([
-                response.get('status', '').lower() == 'success',
-                target_response.get('status', '').lower() == 'success',
-                sl_response.get('status', '').lower() == 'success'
-            ])
-        
-        return response.get('status', '').lower() == 'success'
-    except Exception as e:
-        st.error(f"Dhan order failed: {str(e)}")
-        return False
+        st.error(f"❌ Telegram error: {e}")
 
 def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -387,17 +250,6 @@ def handle_export_data(df_summary, spot_price):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
-            
-            # Send email with the report
-            if EMAIL_CONFIGURED:
-                if send_email(
-                    subject=f"Nifty Options Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                    body="Please find attached the Nifty Options Analysis Report.",
-                    attachment=excel_data,
-                    filename=filename
-                ):
-                    st.success("✅ Email sent successfully!")
-            
             st.success("✅ Export ready! Click the download button above.")
             st.session_state.export_data = False
         except Exception as e:
@@ -524,7 +376,7 @@ def analyze():
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
-        market_start = datetime.strptime("09:15", "%H:%M").time()
+        market_start = datetime.strptime("09:00", "%H:%M").time()
         market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
@@ -641,28 +493,16 @@ def analyze():
                         "SL": round(signal['ltp'] * 0.8, 2)
                     })
                     
-                    # Auto-trade execution with SL and Target
-                    if st.secrets.get("AUTO_TRADE", False) and st.session_state.dhan:
-                        symbol = f"NIFTY{expiry.replace('-', '').upper()}{signal['strike']}{'CE' if 'CALL' in signal['type'] else 'PE'}"
-                        success = place_dhan_order_with_sltp(
-                            symbol=symbol,
-                            exchange_segment="NFO",
-                            transaction_type="BUY",
-                            quantity=50,
-                            order_type="LIMIT",
-                            price=signal['ltp'],
-                            target_percent=20,
-                            stoploss_percent=20,
-                            underlying_price=underlying
-                        )
-                        
-                        if success:
-                            send_telegram_message(
-                                f"✅ AUTO-TRADE EXECUTED: {symbol} @ {signal['ltp']}\n"
-                                f"🎯 Target: {signal['ltp'] * 1.2:.2f}\n"
-                                f"🛑 Stoploss: {signal['ltp'] * 0.8:.2f}"
-                            )
-                            st.success("Auto-trade executed successfully with SL & Target")
+                    # Send Telegram alert
+                    send_telegram_message(
+                        f"📅 EXPIRY DAY SIGNAL\n"
+                        f"Type: {signal['type']}\n"
+                        f"Strike: {signal['strike']}\n"
+                        f"Score: {signal['score']:.1f}\n"
+                        f"LTP: ₹{signal['ltp']}\n"
+                        f"Reason: {signal['reason']}\n"
+                        f"Spot: {underlying}"
+                    )
             else:
                 st.warning("No strong expiry day signals detected")
             
@@ -701,12 +541,6 @@ def analyze():
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-        
-        # === NEW: 3rd OTM/ITM STRIKE FILTER ===
-        strike_interval = int(df['strikePrice'].diff().mode()[0])  # Auto-detect interval
-        valid_call_strike = atm_strike + (3 * strike_interval)  # 3rd OTM for calls
-        valid_put_strike = atm_strike - (3 * strike_interval)   # 3rd ITM for puts
-        
         df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
@@ -760,7 +594,7 @@ def analyze():
         support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
 
-        atm_signal, suggested_trade = "No Signal", None
+        atm_signal, suggested_trade = "No Signal", ""
         signal_sent = False
 
         # Check if previous trade is still active (for cooldown)
@@ -784,16 +618,7 @@ def analyze():
                     and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
                     and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
                 ):
-                    if row['Strike'] != valid_call_strike:  # NEW FILTER
-                        continue  # Skip if not 3rd OTM
-                        
                     option_type = 'CE'
-                    ltp = df.loc[df['strikePrice'] == row['Strike'], 'lastPrice_CE'].values[0]
-                    iv = df.loc[df['strikePrice'] == row['Strike'], 'impliedVolatility_CE'].values[0]
-                    target = round(ltp * (1 + iv / 100), 2)
-                    stop_loss = round(ltp * 0.8, 2)
-                    atm_signal = f"CALL Entry (Bias Based at {row['Level']})"
-                    suggested_trade = f"Strike: {row['Strike']} CE @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
 
                 # Resistance + Bearish conditions (with ATM bias checks)
                 elif (
@@ -803,18 +628,17 @@ def analyze():
                     and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                     and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
                 ):
-                    if row['Strike'] != valid_put_strike:  # NEW FILTER
-                        continue  # Skip if not 3rd ITM
-                        
                     option_type = 'PE'
-                    ltp = df.loc[df['strikePrice'] == row['Strike'], 'lastPrice_PE'].values[0]
-                    iv = df.loc[df['strikePrice'] == row['Strike'], 'impliedVolatility_PE'].values[0]
-                    target = round(ltp * (1 + iv / 100), 2)
-                    stop_loss = round(ltp * 0.8, 2)
-                    atm_signal = f"PUT Entry (Bias Based at {row['Level']})"
-                    suggested_trade = f"Strike: {row['Strike']} PE @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
                 else:
                     continue
+
+                ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
+                iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
+                target = round(ltp * (1 + iv / 100), 2)
+                stop_loss = round(ltp * 0.8, 2)
+
+                atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
+                suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
 
                 send_telegram_message(
                     f"📍 Spot: {underlying}\n"
@@ -838,32 +662,9 @@ def analyze():
                     "LTP": ltp,
                     "Target": target,
                     "SL": stop_loss,
-                    "TargetHit": False,
-                    "SLHit": False
+                    "TargetHit": False,  # Track target hit status
+                    "SLHit": False       # Track SL hit status
                 })
-
-                # Auto-trade execution with SL and Target
-                if st.session_state.dhan and st.secrets.get("AUTO_TRADE", False):
-                    symbol = f"NIFTY{expiry.replace('-', '').upper()}{row['Strike']}{option_type}"
-                    success = place_dhan_order_with_sltp(
-                        symbol=symbol,
-                        exchange_segment="NFO",
-                        transaction_type="BUY",
-                        quantity=50,
-                        order_type="LIMIT",
-                        price=ltp,
-                        target_percent=20,
-                        stoploss_percent=20,
-                        underlying_price=underlying
-                    )
-                    
-                    if success:
-                        send_telegram_message(
-                            f"✅ AUTO-TRADE EXECUTED: {symbol} @ {ltp}\n"
-                            f"🎯 Target: {ltp * 1.2:.2f}\n"
-                            f"🛑 Stoploss: {ltp * 0.8:.2f}"
-                        )
-                        st.success("Auto-trade executed successfully with SL & Target")
 
                 signal_sent = True
                 break
