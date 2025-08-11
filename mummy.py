@@ -52,7 +52,7 @@ DHAN_API_URL = "https://api.dhan.co"
 
 # === Trade Settings ===
 COOLDOWN_MINUTES = 30  # 30 minutes cooldown between trades
-LOT_SIZE = 50  # Nifty lot size
+LOT_SIZE = 75  # Nifty lot size
 ORDER_TYPE = "MARKET"  # or "LIMIT"
 PRODUCT_TYPE = "MIS"  # MIS for intraday, NRML for delivery
 EXCHANGE_SEGMENT = "NFO"  # NFO for F&O
