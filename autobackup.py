@@ -113,13 +113,15 @@ if 'dhan' not in st.session_state:
         st.session_state.dhan = None
         st.warning("Dhan API credentials not configured")
 
-def place_dhan_order(symbol, exchange_segment, transaction_type, quantity, order_type, price=0, trigger_price=0):
-    """Minimal order placement function"""
+def place_dhan_order_with_sltp(symbol, exchange_segment, transaction_type, quantity, order_type, price=0, 
+                              target_percent=None, stoploss_percent=None, underlying_price=None):
+    """Enhanced order placement function with automatic SL and Target"""
     if not st.session_state.dhan:
         st.error("Dhan API not initialized")
         return False
     
     try:
+        # Place main order
         order_params = {
             "security_id": symbol,
             "exchange_segment": exchange_segment,
@@ -127,10 +129,57 @@ def place_dhan_order(symbol, exchange_segment, transaction_type, quantity, order
             "quantity": quantity,
             "order_type": order_type,
             "product_type": "INTRADAY",
-            "price": price,
-            "trigger_price": trigger_price
+            "price": price
         }
+        
         response = st.session_state.dhan.place_order(**order_params)
+        if not response.get('status', '').lower() == 'success':
+            return False
+        
+        # Calculate target and stoploss prices if percentages are provided
+        if target_percent and stoploss_percent and underlying_price:
+            if 'CE' in symbol:  # For CALL options
+                target_price = round(price * (1 + target_percent/100), 2)
+                stoploss_price = round(price * (1 - stoploss_percent/100), 2)
+            else:  # For PUT options
+                target_price = round(price * (1 + target_percent/100), 2)
+                stoploss_price = round(price * (1 - stoploss_percent/100), 2)
+            
+            # Place target order (LIMIT)
+            target_params = {
+                "security_id": symbol,
+                "exchange_segment": exchange_segment,
+                "transaction_type": "SELL",
+                "quantity": quantity,
+                "order_type": "LIMIT",
+                "product_type": "INTRADAY",
+                "price": target_price,
+                "disclosed_quantity": quantity,
+                "after_market_order": False
+            }
+            target_response = st.session_state.dhan.place_order(**target_params)
+            
+            # Place stoploss order (SL-M)
+            sl_params = {
+                "security_id": symbol,
+                "exchange_segment": exchange_segment,
+                "transaction_type": "SELL",
+                "quantity": quantity,
+                "order_type": "SL-M",
+                "product_type": "INTRADAY",
+                "trigger_price": stoploss_price,
+                "price": stoploss_price * 0.995,  # Slightly below trigger
+                "disclosed_quantity": quantity,
+                "after_market_order": False
+            }
+            sl_response = st.session_state.dhan.place_order(**sl_params)
+            
+            return all([
+                response.get('status', '').lower() == 'success',
+                target_response.get('status', '').lower() == 'success',
+                sl_response.get('status', '').lower() == 'success'
+            ])
+        
         return response.get('status', '').lower() == 'success'
     except Exception as e:
         st.error(f"Dhan order failed: {str(e)}")
@@ -592,21 +641,28 @@ def analyze():
                         "SL": round(signal['ltp'] * 0.8, 2)
                     })
                     
-                    # Auto-trade execution if enabled
-                    if st.secrets.get("AUTO_TRADE", False):
+                    # Auto-trade execution with SL and Target
+                    if st.secrets.get("AUTO_TRADE", False) and st.session_state.dhan:
                         symbol = f"NIFTY{expiry.replace('-', '').upper()}{signal['strike']}{'CE' if 'CALL' in signal['type'] else 'PE'}"
-                        success = place_dhan_order(
+                        success = place_dhan_order_with_sltp(
                             symbol=symbol,
                             exchange_segment="NFO",
                             transaction_type="BUY",
                             quantity=50,
                             order_type="LIMIT",
-                            price=signal['ltp']
+                            price=signal['ltp'],
+                            target_percent=20,
+                            stoploss_percent=20,
+                            underlying_price=underlying
                         )
                         
                         if success:
-                            send_telegram_message(f"✅ AUTO-TRADE EXECUTED: {symbol} @ {signal['ltp']}")
-                            st.success("Auto-trade executed successfully")
+                            send_telegram_message(
+                                f"✅ AUTO-TRADE EXECUTED: {symbol} @ {signal['ltp']}\n"
+                                f"🎯 Target: {signal['ltp'] * 1.2:.2f}\n"
+                                f"🛑 Stoploss: {signal['ltp'] * 0.8:.2f}"
+                            )
+                            st.success("Auto-trade executed successfully with SL & Target")
             else:
                 st.warning("No strong expiry day signals detected")
             
@@ -786,21 +842,28 @@ def analyze():
                     "SLHit": False
                 })
 
-                # Auto-trade execution if enabled
+                # Auto-trade execution with SL and Target
                 if st.session_state.dhan and st.secrets.get("AUTO_TRADE", False):
                     symbol = f"NIFTY{expiry.replace('-', '').upper()}{row['Strike']}{option_type}"
-                    success = place_dhan_order(
+                    success = place_dhan_order_with_sltp(
                         symbol=symbol,
                         exchange_segment="NFO",
                         transaction_type="BUY",
                         quantity=50,
                         order_type="LIMIT",
-                        price=ltp
+                        price=ltp,
+                        target_percent=20,
+                        stoploss_percent=20,
+                        underlying_price=underlying
                     )
                     
                     if success:
-                        send_telegram_message(f"✅ AUTO-TRADE EXECUTED: {symbol} @ {ltp}")
-                        st.success("Auto-trade executed successfully")
+                        send_telegram_message(
+                            f"✅ AUTO-TRADE EXECUTED: {symbol} @ {ltp}\n"
+                            f"🎯 Target: {ltp * 1.2:.2f}\n"
+                            f"🛑 Stoploss: {ltp * 0.8:.2f}"
+                        )
+                        st.success("Auto-trade executed successfully with SL & Target")
 
                 signal_sent = True
                 break
