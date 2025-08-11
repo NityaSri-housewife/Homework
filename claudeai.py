@@ -67,7 +67,7 @@ EMAIL_RECEIVER = st.secrets["EMAIL_RECEIVER"]
 
 # Trading Configuration
 COOLDOWN_MINUTES = 30
-QUANTITY = 75  # Standard lot size for Nifty options
+QUANTITY = 1  # Standard lot size for Nifty options
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
