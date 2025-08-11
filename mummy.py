@@ -42,12 +42,12 @@ if 'active_orders' not in st.session_state:
     st.session_state.active_orders = {}
 
 # === Telegram Config ===
-TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
-TELEGRAM_CHAT_ID = "5704496584"
+TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 
 # === Dhan API Config ===
-DHAN_CLIENT_ID = "your_dhan_client_id"  # Replace with your Dhan client ID
-DHAN_ACCESS_TOKEN = "your_dhan_access_token"  # Replace with your Dhan access token
+DHAN_CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
+DHAN_ACCESS_TOKEN = st.secrets["DHAN_ACCESS_TOKEN"]
 DHAN_API_URL = "https://api.dhan.co"
 
 # === Trade Settings ===
@@ -58,6 +58,7 @@ PRODUCT_TYPE = "MIS"  # MIS for intraday, NRML for delivery
 EXCHANGE_SEGMENT = "NFO"  # NFO for F&O
 TARGET_PERCENTAGE = 1.20  # 20% target
 STOPLOSS_PERCENTAGE = 0.80  # 20% stoploss
+
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
