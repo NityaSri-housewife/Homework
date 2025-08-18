@@ -89,49 +89,62 @@ def calculate_market_phase(option_chain, spot_price, price_change):
     """
     score = 0
     
-    # Extract necessary data from option chain
-    ce_oi_change = option_chain['CE']['changeinOpenInterest']
-    pe_oi_change = option_chain['PE']['changeinOpenInterest']
-    ce_oi_pct_change = option_chain['CE']['pchangeinOpenInterest']
-    pe_oi_pct_change = option_chain['PE']['pchangeinOpenInterest']
-    atm_straddle_premium = (option_chain['CE']['lastPrice'] + option_chain['PE']['lastPrice'])
-    atm_straddle_change = option_chain['CE']['change'] + option_chain['PE']['change']
+    # Check if option chain has CE and PE data
+    if 'CE' not in option_chain or 'PE' not in option_chain:
+        return "Data Not Available", 0, "Incomplete option chain data"
     
-    # Bullish signs
-    if pe_oi_pct_change > ce_oi_pct_change:
-        score += 2
-    if ce_oi_change < 0 and price_change > 0:
-        score += 2
-    if atm_straddle_change > 0 and price_change > 0:
-        score += 1
-    # Check for put writing below spot (simplified check)
-    if option_chain['PE']['strikePrice'] < spot_price and option_chain['PE']['changeinOpenInterest'] > 0:
-        score += 1
-    
-    # Bearish signs
-    if ce_oi_pct_change > pe_oi_pct_change:
-        score -= 2
-    if pe_oi_change < 0 and price_change < 0:
-        score -= 2
-    if atm_straddle_change > 0 and price_change < 0:
-        score -= 1
-    # Check for call writing above spot (simplified check)
-    if option_chain['CE']['strikePrice'] > spot_price and option_chain['CE']['changeinOpenInterest'] > 0:
-        score -= 1
-    
-    # Determine market phase
-    if score >= 3:
-        return "Bullish Trend", score, "Strong bullish signals detected"
-    elif score <= -3:
-        return "Bearish Trend", score, "Strong bearish signals detected"
-    elif -2 <= score <= 2 and ce_oi_pct_change > 10 and pe_oi_pct_change > 10:
-        return "Sideways/Consolidation", score, "Both CE & PE OI increasing strongly"
-    elif ce_oi_pct_change < -10 and pe_oi_pct_change < -10:
-        return "Breakout Brewing", score, "Both CE & PE OI decreasing strongly"
-    elif abs(atm_straddle_change) < 0.5:  # Small premium change
-        return "Rangebound", score, "ATM straddle premium decaying fast"
-    else:
-        return "Trap Zone", score, "Mixed signals detected"
+    try:
+        # Extract necessary data from option chain with default values if keys don't exist
+        ce_oi_change = option_chain['CE'].get('changeinOpenInterest', 0)
+        pe_oi_change = option_chain['PE'].get('changeinOpenInterest', 0)
+        ce_oi_pct_change = option_chain['CE'].get('pchangeinOpenInterest', 0)
+        pe_oi_pct_change = option_chain['PE'].get('pchangeinOpenInterest', 0)
+        ce_last_price = option_chain['CE'].get('lastPrice', 0)
+        pe_last_price = option_chain['PE'].get('lastPrice', 0)
+        ce_change = option_chain['CE'].get('change', 0)
+        pe_change = option_chain['PE'].get('change', 0)
+        ce_strike = option_chain['CE'].get('strikePrice', spot_price)
+        pe_strike = option_chain['PE'].get('strikePrice', spot_price)
+        
+        atm_straddle_premium = ce_last_price + pe_last_price
+        atm_straddle_change = ce_change + pe_change
+        
+        # Bullish signs
+        if pe_oi_pct_change > ce_oi_pct_change:
+            score += 2
+        if ce_oi_change < 0 and price_change > 0:
+            score += 2
+        if atm_straddle_change > 0 and price_change > 0:
+            score += 1
+        if pe_strike < spot_price and pe_oi_change > 0:
+            score += 1
+        
+        # Bearish signs
+        if ce_oi_pct_change > pe_oi_pct_change:
+            score -= 2
+        if pe_oi_change < 0 and price_change < 0:
+            score -= 2
+        if atm_straddle_change > 0 and price_change < 0:
+            score -= 1
+        if ce_strike > spot_price and ce_oi_change > 0:
+            score -= 1
+        
+        # Determine market phase
+        if score >= 3:
+            return "Bullish Trend", score, "Strong bullish signals detected"
+        elif score <= -3:
+            return "Bearish Trend", score, "Strong bearish signals detected"
+        elif -2 <= score <= 2 and ce_oi_pct_change > 10 and pe_oi_pct_change > 10:
+            return "Sideways/Consolidation", score, "Both CE & PE OI increasing strongly"
+        elif ce_oi_pct_change < -10 and pe_oi_pct_change < -10:
+            return "Breakout Brewing", score, "Both CE & PE OI decreasing strongly"
+        elif abs(atm_straddle_change) < 0.5:  # Small premium change
+            return "Rangebound", score, "ATM straddle premium decaying fast"
+        else:
+            return "Trap Zone", score, "Mixed signals detected"
+            
+    except Exception as e:
+        return "Error", 0, f"Error calculating market phase: {str(e)}"
 
 weights = {
     "ChgOI_Bias": 2,
@@ -446,7 +459,7 @@ def analyze():
         expiry = data['records']['expiryDates'][0]
         underlying = data['records']['underlyingValue']
 
-        # === NEW: Open Interest Change Comparison ===
+        # === Open Interest Change Comparison ===
         total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / 100000
         total_pe_change = sum(item['PE']['changeinOpenInterest'] for item in records if 'PE' in item) / 100000
         
@@ -469,37 +482,47 @@ def analyze():
             st.success(f"🚀 Put OI Dominance (Difference: {abs(total_pe_change - total_ce_change):.1f}L)")
         else:
             st.info("⚖️ OI Changes Balanced")
-        # === END OF NEW CODE ===
 
         # === Market Phase Analysis ===
-        atm_option_chain = next(item for item in records if 
-                              abs(item['CE']['strikePrice'] - underlying) < 20 and 
-                              item['CE']['expiryDate'] == expiry)
-        
-        price_change = 0  # Calculate based on previous price
-        if not st.session_state.price_data.empty:
-            prev_price = st.session_state.price_data['Spot'].iloc[-2] if len(st.session_state.price_data) > 1 else underlying
-            price_change = underlying - prev_price
-        
-        market_phase, phase_score, interpretation = calculate_market_phase(
-            atm_option_chain, 
-            underlying, 
-            price_change
-        )
-        
-        st.markdown(f"### 📍 Spot Price: {underlying}")
-        
-        st.markdown("### 🌡️ Market Phase")
-        phase_col1, phase_col2 = st.columns([1, 3])
-        with phase_col1:
-            if "Bullish" in market_phase:
-                st.success(f"**{market_phase}** (Score: {phase_score})")
-            elif "Bearish" in market_phase:
-                st.error(f"**{market_phase}** (Score: {phase_score})")
+        try:
+            # Find ATM option chain (closest to spot price)
+            atm_option_chain = None
+            min_diff = float('inf')
+            for item in records:
+                if 'CE' in item and 'PE' in item and item['CE']['expiryDate'] == expiry:
+                    diff = abs(item['CE']['strikePrice'] - underlying)
+                    if diff < min_diff:
+                        min_diff = diff
+                        atm_option_chain = item
+            
+            if atm_option_chain is None:
+                st.warning("⚠️ Could not find ATM option chain data for market phase analysis")
             else:
-                st.warning(f"**{market_phase}** (Score: {phase_score})")
-        with phase_col2:
-            st.caption(interpretation)
+                price_change = 0  # Calculate based on previous price
+                if not st.session_state.price_data.empty:
+                    prev_price = st.session_state.price_data['Spot'].iloc[-2] if len(st.session_state.price_data) > 1 else underlying
+                    price_change = underlying - prev_price
+                
+                market_phase, phase_score, interpretation = calculate_market_phase(
+                    atm_option_chain, 
+                    underlying, 
+                    price_change
+                )
+                
+                st.markdown("### 🌡️ Market Phase")
+                phase_col1, phase_col2 = st.columns([1, 3])
+                with phase_col1:
+                    if "Bullish" in market_phase:
+                        st.success(f"**{market_phase}** (Score: {phase_score})")
+                    elif "Bearish" in market_phase:
+                        st.error(f"**{market_phase}** (Score: {phase_score})")
+                    else:
+                        st.warning(f"**{market_phase}** (Score: {phase_score})")
+                with phase_col2:
+                    st.caption(interpretation)
+                    
+        except Exception as e:
+            st.warning(f"⚠️ Market phase analysis skipped due to error: {str(e)}")
 
         today = datetime.now(timezone("Asia/Kolkata"))
         expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
