@@ -11,108 +11,52 @@ import plotly.graph_objects as go
 import io
 
 # === Streamlit Config ===
-st.set_page_config(page_title="Multi-Index Options Analyzer", layout="wide")
+st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 min
 
-# === Index Configuration ===
-INDEX_CONFIG = {
-    'NIFTY': {
-        'symbol': 'NIFTY',
-        'strike_interval': 50,  # 25 point intervals
-        'range': 200,  # +/- 300 points from ATM
-        'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY',
-        'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050'
-    },
-    'BANKNIFTY': {
-        'symbol': 'BANKNIFTY',
-        'strike_interval': 100,  # 100 point intervals
-        'range': 1000,  # +/- 1000 points from ATM
-        'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=BANKNIFTY',
-        'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20BANK'
-    },
-    'NIFTYNXT50': {
-        'symbol': 'NIFTYNXT50',
-        'strike_interval': 100,  # 100 point intervals
-        'range': 1000,  # +/- 1000 points from ATM
-        'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=NIFTYNXT50',
-        'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20NEXT%2050'
-    },
-    'FINNIFTY': {
-        'symbol': 'FINNIFTY',
-        'strike_interval': 50,  # 40 point intervals
-        'range': 200,  # +/- 400 points from ATM
-        'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=FINNIFTY',
-        'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20FINANCIAL%20SERVICES'
-    },
-    'MIDCPNIFTY': {
-        'symbol': 'MIDCPNIFTY',
-        'strike_interval': 15,  # 25 point intervals
-        'range': 150,  # +/- 300 points from ATM
-        'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=MIDCPNIFTY',
-        'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20MIDCAP%20SELECT'
-    }
-}
+# Initialize session state for price data
+if 'price_data' not in st.session_state:
+    st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
 
-# Initialize session state for each index
-for index_name in INDEX_CONFIG.keys():
-    # Price data for each index
-    if f'price_data_{index_name}' not in st.session_state:
-        st.session_state[f'price_data_{index_name}'] = pd.DataFrame(columns=["Time", "Spot"])
-    
-    # Trade logs for each index
-    if f'trade_log_{index_name}' not in st.session_state:
-        st.session_state[f'trade_log_{index_name}'] = []
-    
-    # Call log books for each index
-    if f'call_log_book_{index_name}' not in st.session_state:
-        st.session_state[f'call_log_book_{index_name}'] = []
-    
-    # Support/Resistance zones for each index
-    if f'support_zone_{index_name}' not in st.session_state:
-        st.session_state[f'support_zone_{index_name}'] = (None, None)
-    
-    if f'resistance_zone_{index_name}' not in st.session_state:
-        st.session_state[f'resistance_zone_{index_name}'] = (None, None)
-    
-    # PCR history for each index
-    if f'pcr_history_{index_name}' not in st.session_state:
-        st.session_state[f'pcr_history_{index_name}'] = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
+# Initialize session state for enhanced features
+if 'trade_log' not in st.session_state:
+    st.session_state.trade_log = []
 
-# Global settings
-if 'selected_index' not in st.session_state:
-    st.session_state.selected_index = 'NIFTY'
+if 'call_log_book' not in st.session_state:
+    st.session_state.call_log_book = []
 
 if 'export_data' not in st.session_state:
     st.session_state.export_data = False
 
-# PCR-related session state (global settings)
+if 'support_zone' not in st.session_state:
+    st.session_state.support_zone = (None, None)
+
+if 'resistance_zone' not in st.session_state:
+    st.session_state.resistance_zone = (None, None)
+
+# Initialize PCR-related session state
 if 'pcr_threshold_bull' not in st.session_state:
     st.session_state.pcr_threshold_bull = 1.2
 if 'pcr_threshold_bear' not in st.session_state:
     st.session_state.pcr_threshold_bear = 0.7
 if 'use_pcr_filter' not in st.session_state:
     st.session_state.use_pcr_filter = True
+if 'pcr_history' not in st.session_state:
+    st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
 
-def send_telegram_message(message, index_name=""):
-    prefix = f"[{index_name}] " if index_name else ""
+def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"{prefix}{message}"}
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
         response = requests.post(url, data=data)
         if response.status_code != 200:
             st.warning("⚠️ Telegram message failed.")
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
-
-def get_atm_strike(spot_price, index_name):
-    """Calculate ATM strike based on index configuration"""
-    config = INDEX_CONFIG[index_name]
-    interval = config['strike_interval']
-    return round(spot_price / interval) * interval
 
 def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -189,15 +133,11 @@ def determine_level(row):
     else:
         return "Neutral"
 
-def is_in_zone(spot, strike, level, index_name):
-    """Check if spot is in zone with index-specific tolerance"""
-    config = INDEX_CONFIG[index_name]
-    tolerance = config['strike_interval']
-    
+def is_in_zone(spot, strike, level):
     if level == "Support":
-        return strike - tolerance <= spot <= strike + tolerance
+        return strike - 20 <= spot <= strike + 20
     elif level == "Resistance":
-        return strike - tolerance <= spot <= strike + tolerance
+        return strike - 20 <= spot <= strike + 20
     return False
 
 def get_support_resistance_zones(df, spot):
@@ -269,22 +209,18 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
 
     return entries
 
-def display_enhanced_trade_log(index_name):
-    trade_log_key = f'trade_log_{index_name}'
-    if not st.session_state[trade_log_key]:
-        st.info(f"No trades logged yet for {index_name}")
+def display_enhanced_trade_log():
+    if not st.session_state.trade_log:
+        st.info("No trades logged yet")
         return
-    
-    st.markdown(f"### 📜 Enhanced Trade Log - {index_name}")
-    df_trades = pd.DataFrame(st.session_state[trade_log_key])
-    
+    st.markdown("### 📜 Enhanced Trade Log")
+    df_trades = pd.DataFrame(st.session_state.trade_log)
     if 'Current_Price' not in df_trades.columns:
         df_trades['Current_Price'] = df_trades['LTP'] * np.random.uniform(0.8, 1.3, len(df_trades))
         df_trades['Unrealized_PL'] = (df_trades['Current_Price'] - df_trades['LTP']) * 75
         df_trades['Status'] = df_trades['Unrealized_PL'].apply(
             lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
         )
-    
     def color_pnl(row):
         colors = []
         for col in row.index:
@@ -298,13 +234,10 @@ def display_enhanced_trade_log(index_name):
             else:
                 colors.append('')
         return colors
-    
     styled_trades = df_trades.style.apply(color_pnl, axis=1)
     st.dataframe(styled_trades, use_container_width=True)
-    
     total_pl = df_trades['Unrealized_PL'].sum()
     win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
-    
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total P&L", f"₹{total_pl:,.0f}")
@@ -313,37 +246,24 @@ def display_enhanced_trade_log(index_name):
     with col3:
         st.metric("Total Trades", len(df_trades))
 
-def create_export_data(df_summary, trade_logs, spot_price, index_name):
+def create_export_data(df_summary, trade_log, spot_price):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Main summary
-        df_summary.to_excel(writer, sheet_name=f'{index_name}_Summary', index=False)
-        
-        # Trade logs for all indices
-        for idx_name, trades in trade_logs.items():
-            if trades:
-                pd.DataFrame(trades).to_excel(writer, sheet_name=f'{idx_name}_Trades', index=False)
-        
-        # PCR histories for all indices
-        for idx_name in INDEX_CONFIG.keys():
-            pcr_key = f'pcr_history_{idx_name}'
-            if not st.session_state[pcr_key].empty:
-                st.session_state[pcr_key].to_excel(writer, sheet_name=f'{idx_name}_PCR', index=False)
+        df_summary.to_excel(writer, sheet_name='Option_Chain_Summary', index=False)
+        if trade_log:
+            pd.DataFrame(trade_log).to_excel(writer, sheet_name='Trade_Log', index=False)
+        if not st.session_state.pcr_history.empty:
+            st.session_state.pcr_history.to_excel(writer, sheet_name='PCR_History', index=False)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"multi_index_analysis_{timestamp}.xlsx"
+    filename = f"nifty_analysis_{timestamp}.xlsx"
     
     return output.getvalue(), filename
 
-def handle_export_data(df_summary, spot_price, index_name):
+def handle_export_data(df_summary, spot_price):
     if 'export_data' in st.session_state and st.session_state.export_data:
         try:
-            # Collect all trade logs
-            trade_logs = {}
-            for idx_name in INDEX_CONFIG.keys():
-                trade_logs[idx_name] = st.session_state.get(f'trade_log_{idx_name}', [])
-            
-            excel_data, filename = create_export_data(df_summary, trade_logs, spot_price, index_name)
+            excel_data, filename = create_export_data(df_summary, st.session_state.trade_log, spot_price)
             st.download_button(
                 label="📥 Download Excel Report",
                 data=excel_data,
@@ -357,18 +277,14 @@ def handle_export_data(df_summary, spot_price, index_name):
             st.error(f"❌ Export failed: {e}")
             st.session_state.export_data = False
 
-def plot_price_with_sr(index_name):
-    price_key = f'price_data_{index_name}'
-    price_df = st.session_state[price_key].copy()
-    
+def plot_price_with_sr():
+    price_df = st.session_state['price_data'].copy()
     if price_df.empty or price_df['Spot'].isnull().all():
-        st.info(f"Not enough data to show price action chart for {index_name} yet.")
+        st.info("Not enough data to show price action chart yet.")
         return
-    
     price_df['Time'] = pd.to_datetime(price_df['Time'])
-    support_zone = st.session_state.get(f'support_zone_{index_name}', (None, None))
-    resistance_zone = st.session_state.get(f'resistance_zone_{index_name}', (None, None))
-    
+    support_zone = st.session_state.get('support_zone', (None, None))
+    resistance_zone = st.session_state.get('resistance_zone', (None, None))
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=price_df['Time'], 
@@ -377,7 +293,6 @@ def plot_price_with_sr(index_name):
         name='Spot Price',
         line=dict(color='blue', width=2)
     ))
-    
     if all(support_zone) and None not in support_zone:
         fig.add_shape(
             type="rect",
@@ -401,7 +316,6 @@ def plot_price_with_sr(index_name):
             name='Support High',
             line=dict(color='green', dash='dot')
         ))
-    
     if all(resistance_zone) and None not in resistance_zone:
         fig.add_shape(
             type="rect",
@@ -425,9 +339,8 @@ def plot_price_with_sr(index_name):
             name='Resistance High',
             line=dict(color='red', dash='dot')
         ))
-    
     fig.update_layout(
-        title=f"{index_name} Spot Price Action with Support & Resistance",
+        title="Nifty Spot Price Action with Support & Resistance",
         xaxis_title="Time",
         yaxis_title="Spot Price",
         template="plotly_white",
@@ -435,9 +348,8 @@ def plot_price_with_sr(index_name):
     )
     st.plotly_chart(fig, use_container_width=True)
 
-def auto_update_call_log(current_price, index_name):
-    call_log_key = f'call_log_book_{index_name}'
-    for call in st.session_state[call_log_key]:
+def auto_update_call_log(current_price):
+    for call in st.session_state.call_log_book:
         if call["Status"] != "Active":
             continue
         if call["Type"] == "CE":
@@ -463,22 +375,18 @@ def auto_update_call_log(current_price, index_name):
                 call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
                 call["Exit_Price"] = current_price
 
-def display_call_log_book(index_name):
-    st.markdown(f"### 📚 Call Log Book - {index_name}")
-    call_log_key = f'call_log_book_{index_name}'
-    
-    if not st.session_state[call_log_key]:
-        st.info(f"No calls have been made yet for {index_name}.")
+def display_call_log_book():
+    st.markdown("### 📚 Call Log Book")
+    if not st.session_state.call_log_book:
+        st.info("No calls have been made yet.")
         return
-    
-    df_log = pd.DataFrame(st.session_state[call_log_key])
+    df_log = pd.DataFrame(st.session_state.call_log_book)
     st.dataframe(df_log, use_container_width=True)
-    
-    if st.button(f"Download {index_name} Call Log Book as CSV"):
+    if st.button("Download Call Log Book as CSV"):
         st.download_button(
             label="Download CSV",
             data=df_log.to_csv(index=False).encode(),
-            file_name=f"{index_name.lower()}_call_log_book.csv",
+            file_name="call_log_book.csv",
             mime="text/csv"
         )
 
@@ -498,47 +406,50 @@ def color_pcr(val):
     else:
         return 'background-color: #FFFFE0; color: black'
 
-def analyze_index(index_name):
-    """Analyze a single index"""
-    config = INDEX_CONFIG[index_name]
-    trade_log_key = f'trade_log_{index_name}'
-    price_data_key = f'price_data_{index_name}'
-    
-    if trade_log_key not in st.session_state:
-        st.session_state[trade_log_key] = []
-    
+def calculate_long_short_buildup(price_change, oi_change):
+    """Calculate Long/Short Build-up based on price and OI changes"""
+    if price_change > 0 and oi_change > 0:
+        return "Long Build-up"
+    elif price_change < 0 and oi_change > 0:
+        return "Short Build-up"
+    elif price_change > 0 and oi_change < 0:
+        return "Short Covering"
+    elif price_change < 0 and oi_change < 0:
+        return "Long Unwinding"
+    else:
+        return "Neutral"
+
+def analyze():
+    if 'trade_log' not in st.session_state:
+        st.session_state.trade_log = []
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("20:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
-            st.warning(f"⏳ Market Closed for {index_name} (Mon-Fri 9:00-15:40)")
+            st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
             return
 
         headers = {"User-Agent": "Mozilla/5.0"}
         session = requests.Session()
         session.headers.update(headers)
         session.get("https://www.nseindia.com", timeout=5)
-        
-        # Get option chain data
-        response = session.get(config['api_url'], timeout=10)
+        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        response = session.get(url, timeout=10)
         data = response.json()
 
         records = data['records']['data']
         expiry = data['records']['expiryDates'][0]
         underlying = data['records']['underlyingValue']
 
-        # Calculate ATM strike dynamically
-        atm_strike = get_atm_strike(underlying, index_name)
-        
         # Open Interest Change Comparison
         total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / 100000
         total_pe_change = sum(item['PE']['changeinOpenInterest'] for item in records if 'PE' in item) / 100000
         
-        st.markdown(f"## 📊 {index_name} - Open Interest Change (in Lakhs)")
+        st.markdown("## 📊 Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("📉 CALL ΔOI", 
@@ -546,7 +457,7 @@ def analyze_index(index_name):
                      delta_color="inverse")
             
         with col2:
-          st.metric("📈 PUT ΔOI", 
+            st.metric("📈 PUT ΔOI", 
                      f"{total_pe_change:+.1f}L",
                      delta_color="normal")
         
@@ -563,26 +474,23 @@ def analyze_index(index_name):
         is_expiry_day = today.date() == expiry_date.date()
         
         if is_expiry_day:
-            st.info(f"""
-📅 **EXPIRY DAY DETECTED for {index_name}**
+            st.info("""
+📅 **EXPIRY DAY DETECTED**
 - Using specialized expiry day analysis
 - IV Collapse, OI Unwind, Volume Spike expected
 - Modified signals will be generated
 """)
-            send_telegram_message(f"⚠️ Expiry Day Detected for {index_name}. Using special expiry analysis.", index_name)
+            send_telegram_message("⚠️ Expiry Day Detected. Using special expiry analysis.")
             
             current_time_str = now.strftime("%H:%M:%S")
             new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-            st.session_state[price_data_key] = pd.concat([st.session_state[price_data_key], new_row], ignore_index=True)
+            st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
             
-            st.markdown(f"### 📍 {index_name} Spot Price: {underlying}")
+            st.markdown(f"### 📍 Spot Price: {underlying}")
             
-            # Get previous close data
-            try:
-                prev_close_data = session.get(config['prev_close_url'], timeout=10).json()
-                prev_close = prev_close_data['data'][0]['previousClose']
-            except:
-                prev_close = underlying * 0.99  # Fallback if API fails
+            prev_close_url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
+            prev_close_data = session.get(prev_close_url, timeout=10).json()
+            prev_close = prev_close_data['data'][0]['previousClose']
             
             calls, puts = [], []
             for item in records:
@@ -607,7 +515,7 @@ def analyze_index(index_name):
             
             expiry_signals = expiry_entry_signal(df, support_levels, resistance_levels)
             
-            st.markdown(f"### 🎯 {index_name} Expiry Day Signals")
+            st.markdown("### 🎯 Expiry Day Signals")
             if expiry_signals:
                 for signal in expiry_signals:
                     st.success(f"""
@@ -616,7 +524,7 @@ def analyze_index(index_name):
                     Reason: {signal['reason']}
                     """)
                     
-                    st.session_state[trade_log_key].append({
+                    st.session_state.trade_log.append({
                         "Time": now.strftime("%H:%M:%S"),
                         "Strike": signal['strike'],
                         "Type": 'CE' if 'CALL' in signal['type'] else 'PE',
@@ -632,12 +540,12 @@ def analyze_index(index_name):
                         f"Score: {signal['score']:.1f}\n"
                         f"LTP: ₹{signal['ltp']}\n"
                         f"Reason: {signal['reason']}\n"
-                        f"Spot: {underlying}", index_name
+                        f"Spot: {underlying}"
                     )
             else:
-                st.warning(f"No strong expiry day signals detected for {index_name}")
+                st.warning("No strong expiry day signals detected")
             
-            with st.expander(f"📊 {index_name} Expiry Day Option Chain"):
+            with st.expander("📊 Expiry Day Option Chain"):
                 df['ExpiryBiasScore'] = df.apply(expiry_bias_score, axis=1)
                 st.dataframe(df[['strikePrice', 'ExpiryBiasScore', 'lastPrice_CE', 'lastPrice_PE', 
                                'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
@@ -670,371 +578,296 @@ def analyze_index(index_name):
         df_pe = pd.DataFrame(puts)
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
-        # Filter strikes based on index configuration
-        strike_range = config['range']
-        df = df[df['strikePrice'].between(atm_strike - strike_range, atm_strike + strike_range)]
+        atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+        df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
 
-        return df, underlying, atm_strike, now
-
-    except Exception as e:
-        st.error(f"❌ Error analyzing {index_name}: {e}")
-        send_telegram_message(f"❌ Error analyzing {index_name}: {str(e)}", index_name)
-        return None, None, None, None
-
-def process_index_signals(df, underlying, atm_strike, now, index_name):
-    """Process signals for an index"""
-    config = INDEX_CONFIG[index_name]
-    trade_log_key = f'trade_log_{index_name}'
-    price_data_key = f'price_data_{index_name}'
-    pcr_history_key = f'pcr_history_{index_name}'
-    
-    # Calculate strike analysis range based on index configuration  
-    analysis_range = min(config['range'] // 2, 200)  # Limit analysis range
-    
-    bias_results, total_score = [], 0
-    for _, row in df.iterrows():
-        if abs(row['strikePrice'] - atm_strike) > analysis_range:
-            continue
-
-        # Add bid/ask pressure calculation
-        bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
-            row['bidQty_CE'], row['askQty_CE'], 
-            row['bidQty_PE'], row['askQty_PE']
-        )
-        
-        score = 0
-        row_data = {
-            "Strike": row['strikePrice'],
-            "Zone": row['Zone'],
-            "Level": row['Level'],
-            "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
-            "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
-            "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
-            "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
-            "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
-            "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
-            "DVP_Bias": delta_volume_bias(
-                row['lastPrice_CE'] - row['lastPrice_PE'],
-                row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
-                row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
-            ),
-            "BidAskPressure": bid_ask_pressure,
-            "PressureBias": pressure_bias
-        }
-
-        for k in row_data:
-            if "_Bias" in k:
-                bias = row_data[k]
-                score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
-            elif k == "PressureBias":
-                score += weights.get("PressureBias", 1) if pressure_bias == "Bullish" else -weights.get("PressureBias", 1)
-
-        row_data["BiasScore"] = score
-        row_data["Verdict"] = final_verdict(score)
-        total_score += score
-        bias_results.append(row_data)
-
-    df_summary = pd.DataFrame(bias_results)
-    
-    # === PCR CALCULATION AND MERGE ===
-    df_summary = pd.merge(
-        df_summary,
-        df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
-            'changeinOpenInterest_CE', 'changeinOpenInterest_PE']],
-        left_on='Strike',
-        right_on='strikePrice',
-        how='left'
-    )
-
-    df_summary['PCR'] = (
-        (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
-        (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
-    )
-
-    df_summary['PCR'] = np.where(
-        (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
-        0,
-        df_summary['PCR']
-    )
-
-    df_summary['PCR'] = df_summary['PCR'].round(2)
-    df_summary['PCR_Signal'] = np.where(
-        df_summary['PCR'] > st.session_state.pcr_threshold_bull,
-        "Bullish",
-        np.where(
-            df_summary['PCR'] < st.session_state.pcr_threshold_bear,
-            "Bearish",
-            "Neutral"
-        )
-    )
-
-    styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
-    df_summary = df_summary.drop(columns=['strikePrice'])
-    
-    # Record PCR history
-    for _, row in df_summary.iterrows():
-        new_pcr_data = pd.DataFrame({
-            "Time": [now.strftime("%H:%M:%S")],
-            "Strike": [row['Strike']],
-            "PCR": [row['PCR']],
-            "Signal": [row['PCR_Signal']]
-        })
-        st.session_state[pcr_history_key] = pd.concat([st.session_state[pcr_history_key], new_pcr_data])
-
-    atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
-    market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
-    support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
-
-    st.session_state[f'support_zone_{index_name}'] = support_zone
-    st.session_state[f'resistance_zone_{index_name}'] = resistance_zone
-
-    current_time_str = now.strftime("%H:%M:%S")
-    new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-    st.session_state[price_data_key] = pd.concat([st.session_state[price_data_key], new_row], ignore_index=True)
-
-    support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
-    resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
-
-    atm_signal, suggested_trade = "No Signal", ""
-    signal_sent = False
-
-    last_trade = st.session_state[trade_log_key][-1] if st.session_state[trade_log_key] else None
-    if last_trade and not (last_trade.get("TargetHit", False) or last_trade.get("SLHit", False)):
-        pass
-    else:
-        for row in bias_results:
-            if not is_in_zone(underlying, row['Strike'], row['Level'], index_name):
+        bias_results, total_score = [], 0
+        for _, row in df.iterrows():
+            if abs(row['strikePrice'] - atm_strike) > 100:
                 continue
 
-            atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
-            atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
-            pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
-
-            if st.session_state.use_pcr_filter:
-                # Support + Bullish conditions with PCR confirmation
-                if (row['Level'] == "Support" and total_score >= 4 
-                    and "Bullish" in market_view
-                    and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                    and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
-                    and pcr_signal == "Bullish"):
-                    option_type = 'CE'
-                # Resistance + Bearish conditions with PCR confirmation
-                elif (row['Level'] == "Resistance" and total_score <= -4 
-                      and "Bearish" in market_view
-                      and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                      and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
-                      and pcr_signal == "Bearish"):
-                    option_type = 'PE'
-                else:
-                    continue
-            else:
-                # Original signal logic without PCR confirmation
-                if (row['Level'] == "Support" and total_score >= 4 
-                    and "Bullish" in market_view
-                    and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
-                    and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)):
-                    option_type = 'CE'
-                elif (row['Level'] == "Resistance" and total_score <= -4 
-                      and "Bearish" in market_view
-                      and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
-                      and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)):
-                    option_type = 'PE'
-                else:
-                    continue
-
-            ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
-            iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
-            target = round(ltp * (1 + iv / 100), 2)
-            stop_loss = round(ltp * 0.8, 2)
-
-            atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
-            suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
-
-            send_telegram_message(
-                f"⚙️ PCR Config: Bull>{st.session_state.pcr_threshold_bull} Bear<{st.session_state.pcr_threshold_bear} "
-                f"(Filter {'ON' if st.session_state.use_pcr_filter else 'OFF'})\n"
-                f"📍 Spot: {underlying}\n"
-                f"🔹 {atm_signal}\n"
-                f"{suggested_trade}\n"
-                f"PCR: {df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0]} ({pcr_signal})\n"
-                f"Bias Score: {total_score} ({market_view})\n"
-                f"Level: {row['Level']}\n"
-                f"📉 Support Zone: {support_str}\n"
-                f"📈 Resistance Zone: {resistance_str}", index_name
+            # Add bid/ask pressure calculation
+            bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
+                row['bidQty_CE'], row['askQty_CE'], 
+                row['bidQty_PE'], row['askQty_PE']
             )
-
-            st.session_state[trade_log_key].append({
-                "Time": now.strftime("%H:%M:%S"),
-                "Strike": row['Strike'],
-                "Type": option_type,
-                "LTP": ltp,
-                "Target": target,
-                "SL": stop_loss,
-                "TargetHit": False,
-                "SLHit": False,
-                "PCR": df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0],
-                "PCR_Signal": pcr_signal
-            })
-
-            signal_sent = True
-            break
-
-    return df_summary, styled_df, market_view, total_score, support_str, resistance_str, atm_signal, suggested_trade
-
-def analyze():
-    """Main analysis function for all indices"""
-    
-    # Index Selection
-    st.sidebar.markdown("## 📊 Index Selection")
-    selected_index = st.sidebar.selectbox(
-        "Choose Index to Analyze:",
-        options=list(INDEX_CONFIG.keys()),
-        index=list(INDEX_CONFIG.keys()).index(st.session_state.selected_index)
-    )
-    st.session_state.selected_index = selected_index
-    
-    # Multi-index overview in sidebar
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("## 🔍 Quick Overview")
-    
-    # Show basic info for all indices
-    for idx_name in INDEX_CONFIG.keys():
-        config = INDEX_CONFIG[idx_name]
-        price_key = f'price_data_{idx_name}'
-        if not st.session_state[price_key].empty:
-            latest_price = st.session_state[price_key]['Spot'].iloc[-1]
-            atm = get_atm_strike(latest_price, idx_name)
             
-            with st.sidebar.expander(f"📈 {idx_name}"):
-                st.write(f"**Spot:** {latest_price}")
-                st.write(f"**ATM:** {atm}")
-                st.write(f"**Interval:** {config['strike_interval']}")
-    
-    # Analyze the selected index
-    result = analyze_index(selected_index)
-    
-    if result[0] is None:  # Error occurred
-        return
-    
-    df, underlying, atm_strike, now = result
-    
-    # Process signals for the selected index
-    signal_result = process_index_signals(df, underlying, atm_strike, now, selected_index)
-    df_summary, styled_df, market_view, total_score, support_str, resistance_str, atm_signal, suggested_trade = signal_result
-    
-    # === Main Display ===
-    st.markdown(f"### 📍 {selected_index} Spot Price: {underlying}")
-    st.success(f"🧠 Market View: **{market_view}** | Bias Score: {total_score}")
-    st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
-    st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
-    
-    plot_price_with_sr(selected_index)
+            # Calculate Long/Short Build-up for CE and PE
+            ce_price_change = row['lastPrice_CE'] - row['previousClose_CE'] if 'previousClose_CE' in row else 0
+            pe_price_change = row['lastPrice_PE'] - row['previousClose_PE'] if 'previousClose_PE' in row else 0
+            
+            ce_buildup = calculate_long_short_buildup(ce_price_change, row['changeinOpenInterest_CE'])
+            pe_buildup = calculate_long_short_buildup(pe_price_change, row['changeinOpenInterest_PE'])
+            
+            score = 0
+            row_data = {
+                "Strike": row['strikePrice'],
+                "Zone": row['Zone'],
+                "Level": row['Level'],
+                "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
+                "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
+                "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
+                "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
+                "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
+                "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
+                "DVP_Bias": delta_volume_bias(
+                    row['lastPrice_CE'] - row['lastPrice_PE'],
+                    row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
+                    row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
+                ),
+                # Add bid/ask pressure to the row data
+                "BidAskPressure": bid_ask_pressure,
+                "PressureBias": pressure_bias,
+                # Add Long/Short Build-up columns
+                "CE_Buildup": ce_buildup,
+                "PE_Buildup": pe_buildup
+            }
 
-    if suggested_trade:
-        st.info(f"🔹 {atm_signal}\n{suggested_trade}")
-    
-    with st.expander(f"📊 {selected_index} Option Chain Summary"):
-        st.info(f"""
-        ℹ️ PCR Interpretation:
-        - >{st.session_state.pcr_threshold_bull} = Strong Put Activity (Bullish)
-        - <{st.session_state.pcr_threshold_bear} = Strong Call Activity (Bearish)
-        - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
-        """)
-        st.dataframe(styled_df)
-    
-    trade_log_key = f'trade_log_{selected_index}'
-    if st.session_state[trade_log_key]:
-        st.markdown(f"### 📜 {selected_index} Trade Log")
-        st.dataframe(pd.DataFrame(st.session_state[trade_log_key]))
+            for k in row_data:
+                if "_Bias" in k:
+                    bias = row_data[k]
+                    score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
+                # Add pressure bias to scoring
+                elif k == "PressureBias":
+                    score += weights.get("PressureBias", 1) if bias == "Bullish" else -weights.get("PressureBias", 1)
 
-    # === Enhanced Functions Display ===
-    st.markdown("---")
-    st.markdown(f"## 📈 Enhanced Features - {selected_index}")
-    
-    # PCR Configuration (Global settings)
-    st.markdown("### 🧮 PCR Configuration")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.session_state.pcr_threshold_bull = st.number_input(
-            "Bullish PCR Threshold (>)", 
-            min_value=1.0, max_value=5.0, 
-            value=st.session_state.pcr_threshold_bull, 
-            step=0.1
-        )
-    with col2:
-        st.session_state.pcr_threshold_bear = st.number_input(
-            "Bearish PCR Threshold (<)", 
-            min_value=0.1, max_value=1.0, 
-            value=st.session_state.pcr_threshold_bear, 
-            step=0.1
-        )
-    with col3:
-        st.session_state.use_pcr_filter = st.checkbox(
-            "Enable PCR Filtering", 
-            value=st.session_state.use_pcr_filter
-        )
-    
-    # PCR History for selected index
-    pcr_history_key = f'pcr_history_{selected_index}'
-    with st.expander(f"📈 {selected_index} PCR History"):
-        if not st.session_state[pcr_history_key].empty:
-            pcr_pivot = st.session_state[pcr_history_key].pivot_table(
-                index='Time', 
-                columns='Strike', 
-                values='PCR',
-                aggfunc='last'
-            )
-            st.line_chart(pcr_pivot)
-            st.dataframe(st.session_state[pcr_history_key])
-        else:
-            st.info(f"No PCR history recorded yet for {selected_index}")
-    
-    # Enhanced Trade Log for selected index
-    display_enhanced_trade_log(selected_index)
-    
-    # Export functionality
-    st.markdown("---")
-    st.markdown("### 📥 Data Export")
-    if st.button("Prepare Excel Export"):
-        st.session_state.export_data = True
-    handle_export_data(df_summary, underlying, selected_index)
-    
-    # Call Log Book for selected index
-    st.markdown("---")
-    display_call_log_book(selected_index)
-    
-    # Auto update call log with current price
-    auto_update_call_log(underlying, selected_index)
-    
-    # Multi-Index Summary
-    st.markdown("---")
-    st.markdown("## 📊 Multi-Index Summary")
-    
-    summary_data = []
-    for idx_name in INDEX_CONFIG.keys():
-        price_key = f'price_data_{idx_name}'
-        trade_key = f'trade_log_{idx_name}'
+            row_data["BiasScore"] = score
+            row_data["Verdict"] = final_verdict(score)
+            total_score += score
+            bias_results.append(row_data)
+
+        df_summary = pd.DataFrame(bias_results)
         
-        if not st.session_state[price_key].empty:
-            latest_price = st.session_state[price_key]['Spot'].iloc[-1]
-            atm = get_atm_strike(latest_price, idx_name)
-            total_trades = len(st.session_state[trade_key])
-            
-            summary_data.append({
-                'Index': idx_name,
-                'Spot': latest_price,
-                'ATM': atm,
-                'Total Trades': total_trades,
-                'Last Updated': st.session_state[price_key]['Time'].iloc[-1] if not st.session_state[price_key].empty else 'N/A'
+        # === PCR CALCULATION AND MERGE ===
+        df_summary = pd.merge(
+            df_summary,
+            df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
+                'changeinOpenInterest_CE', 'changeinOpenInterest_PE']],
+            left_on='Strike',
+            right_on='strikePrice',
+            how='left'
+        )
+
+        df_summary['PCR'] = (
+            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
+            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
+        )
+
+        df_summary['PCR'] = np.where(
+            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
+            0,
+            df_summary['PCR']
+        )
+
+        df_summary['PCR'] = df_summary['PCR'].round(2)
+        df_summary['PCR_Signal'] = np.where(
+            df_summary['PCR'] > st.session_state.pcr_threshold_bull,
+            "Bullish",
+            np.where(
+                df_summary['PCR'] < st.session_state.pcr_threshold_bear,
+                "Bearish",
+                "Neutral"
+            )
+        )
+
+        styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
+        df_summary = df_summary.drop(columns=['strikePrice'])
+        
+        # Record PCR history
+        for _, row in df_summary.iterrows():
+            new_pcr_data = pd.DataFrame({
+                "Time": [now.strftime("%H:%M:%S")],
+                "Strike": [row['Strike']],
+                "PCR": [row['PCR']],
+                "Signal": [row['PCR_Signal']]
             })
-    
-    if summary_data:
-        summary_df = pd.DataFrame(summary_data)
-        st.dataframe(summary_df, use_container_width=True)
-    else:
-        st.info("No data available yet for any index")
+            st.session_state.pcr_history = pd.concat([st.session_state.pcr_history, new_pcr_data])
+
+        atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
+        market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
+        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
+
+        st.session_state.support_zone = support_zone
+        st.session_state.resistance_zone = resistance_zone
+
+        current_time_str = now.strftime("%H:%M:%S")
+        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
+        st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
+
+        support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) else "N/A"
+        resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) else "N/A"
+
+        atm_signal, suggested_trade = "No Signal", ""
+        signal_sent = False
+
+        last_trade = st.session_state.trade_log[-1] if st.session_state.trade_log else None
+        if last_trade and not (last_trade.get("TargetHit", False) or last_trade.get("SLHit", False)):
+            pass
+        else:
+            for row in bias_results:
+                if not is_in_zone(underlying, row['Strike'], row['Level']):
+                    continue
+
+                atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
+                atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
+                pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
+
+                if st.session_state.use_pcr_filter:
+                    # Support + Bullish conditions with PCR confirmation
+                    if (row['Level'] == "Support" and total_score >= 4 
+                        and "Bullish" in market_view
+                        and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
+                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
+                        and pcr_signal == "Bullish"):
+                        option_type = 'CE'
+                    # Resistance + Bearish conditions with PCR confirmation
+                    elif (row['Level'] == "Resistance" and total_score <= -4 
+                          and "Bearish" in market_view
+                          and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
+                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
+                          and pcr_signal == "Bearish"):
+                        option_type = 'PE'
+                    else:
+                        continue
+                else:
+                    # Original signal logic without PCR confirmation
+                    if (row['Level'] == "Support" and total_score >= 4 
+                        and "Bullish" in market_view
+                        and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
+                        and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)):
+                        option_type = 'CE'
+                    elif (row['Level'] == "Resistance" and total_score <= -4 
+                          and "Bearish" in market_view
+                          and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
+                          and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)):
+                        option_type = 'PE'
+                    else:
+                        continue
+
+                ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
+                iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
+                target = round(ltp * (1 + iv / 100), 2)
+                stop_loss = round(ltp * 0.8, 2)
+
+                atm_signal = f"{'CALL' if option_type == 'CE' else 'PUT'} Entry (Bias Based at {row['Level']})"
+                suggested_trade = f"Strike: {row['Strike']} {option_type} @ ₹{ltp} | 🎯 Target: ₹{target} | 🛑 SL: ₹{stop_loss}"
+
+                send_telegram_message(
+                    f"⚙️ PCR Config: Bull>{st.session_state.pcr_threshold_bull} Bear<{st.session_state.pcr_threshold_bear} "
+                    f"(Filter {'ON' if st.session_state.use_pcr_filter else 'OFF'})\n"
+                    f"📍 Spot: {underlying}\n"
+                    f"🔹 {atm_signal}\n"
+                    f"{suggested_trade}\n"
+                    f"PCR: {df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0]} ({pcr_signal})\n"
+                    f"Bias Score: {total_score} ({market_view})\n"
+                    f"Level: {row['Level']}\n"
+                    f"📉 Support Zone: {support_str}\n"
+                    f"📈 Resistance Zone: {resistance_str}"
+                )
+
+                st.session_state.trade_log.append({
+                    "Time": now.strftime("%H:%M:%S"),
+                    "Strike": row['Strike'],
+                    "Type": option_type,
+                    "LTP": ltp,
+                    "Target": target,
+                    "SL": stop_loss,
+                    "TargetHit": False,
+                    "SLHit": False,
+                    "PCR": df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0],
+                    "PCR_Signal": pcr_signal
+                })
+
+                signal_sent = True
+                break
+
+        # === Main Display ===
+        st.markdown(f"### 📍 Spot Price: {underlying}")
+        st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
+        st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
+        st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
+        
+        plot_price_with_sr()
+
+        if suggested_trade:
+            st.info(f"🔹 {atm_signal}\n{suggested_trade}")
+        
+        with st.expander("📊 Option Chain Summary"):
+            st.info(f"""
+            ℹ️ PCR Interpretation:
+            - >{st.session_state.pcr_threshold_bull} = Strong Put Activity (Bullish)
+            - <{st.session_state.pcr_threshold_bear} = Strong Call Activity (Bearish)
+            - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
+            """)
+            st.dataframe(styled_df)
+        
+        if st.session_state.trade_log:
+            st.markdown("### 📜 Trade Log")
+            st.dataframe(pd.DataFrame(st.session_state.trade_log))
+
+        # === Enhanced Functions Display ===
+        st.markdown("---")
+        st.markdown("## 📈 Enhanced Features")
+        
+        # PCR Configuration
+        st.markdown("### 🧮 PCR Configuration")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.session_state.pcr_threshold_bull = st.number_input(
+                "Bullish PCR Threshold (>)", 
+                min_value=1.0, max_value=5.0, 
+                value=st.session_state.pcr_threshold_bull, 
+                step=0.1
+            )
+        with col2:
+            st.session_state.pcr_threshold_bear = st.number_input(
+                "Bearish PCR Threshold (<)", 
+                min_value=0.1, max_value=1.0, 
+                value=st.session_state.pcr_threshold_bear, 
+                step=0.1
+            )
+        with col3:
+            st.session_state.use_pcr_filter = st.checkbox(
+                "Enable PCR Filtering", 
+                value=st.session_state.use_pcr_filter
+            )
+        
+        # PCR History
+        with st.expander("📈 PCR History"):
+            if not st.session_state.pcr_history.empty:
+                pcr_pivot = st.session_state.pcr_history.pivot_table(
+                    index='Time', 
+                    columns='Strike', 
+                    values='PCR',
+                    aggfunc='last'
+                )
+                st.line_chart(pcr_pivot)
+                st.dataframe(st.session_state.pcr_history)
+            else:
+                st.info("No PCR history recorded yet")
+        
+        # Enhanced Trade Log
+        display_enhanced_trade_log()
+        
+        # Export functionality
+        st.markdown("---")
+        st.markdown("### 📥 Data Export")
+        if st.button("Prepare Excel Export"):
+            st.session_state.export_data = True
+        handle_export_data(df_summary, underlying)
+        
+        # Call Log Book
+        st.markdown("---")
+        display_call_log_book()
+        
+        # Auto update call log with current price
+        auto_update_call_log(underlying)
+
+    except Exception as e:
+        st.error(f"❌ Error: {e}")
+        send_telegram_message(f"❌ Error: {str(e)}")
 
 # === Main Function Call ===
 if __name__ == "__main__":
