@@ -215,7 +215,7 @@ def get_support_resistance_zones(df, spot):
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
 
     return support_zone, resistance_zone
-  def expiry_bias_score(row):
+def expiry_bias_score(row):
     score = 0
 
     if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] > row['previousClose_CE']:
