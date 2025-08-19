@@ -36,7 +36,7 @@ if 'resistance_zone' not in st.session_state:
 
 # Initialize PCR-related session state
 if 'pcr_threshold_bull' not in st.session_state:
-    st.session_state.pcr_threshold_bull = 1.3
+    st.session_state.pcr_threshold_bull = 1.2
 if 'pcr_threshold_bear' not in st.session_state:
     st.session_state.pcr_threshold_bear = 0.7
 if 'use_pcr_filter' not in st.session_state:
