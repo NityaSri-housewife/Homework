@@ -18,7 +18,6 @@ st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 min
 INDEX_CONFIG = {
     'NIFTY': {
         'symbol': 'NIFTY',
-        'atm_base': 25000,
         'strike_interval': 25,  # 25 point intervals
         'range': 300,  # +/- 300 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY',
@@ -26,7 +25,6 @@ INDEX_CONFIG = {
     },
     'BANKNIFTY': {
         'symbol': 'BANKNIFTY',
-        'atm_base': 56000,
         'strike_interval': 100,  # 100 point intervals
         'range': 1000,  # +/- 1000 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=BANKNIFTY',
@@ -34,7 +32,6 @@ INDEX_CONFIG = {
     },
     'NIFTYNXT50': {
         'symbol': 'NIFTYNXT50',
-        'atm_base': 68000,
         'strike_interval': 100,  # 100 point intervals
         'range': 1000,  # +/- 1000 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=NIFTYNXT50',
@@ -42,7 +39,6 @@ INDEX_CONFIG = {
     },
     'FINNIFTY': {
         'symbol': 'FINNIFTY',
-        'atm_base': 26600,
         'strike_interval': 25,  # 40 point intervals
         'range': 300,  # +/- 400 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=FINNIFTY',
@@ -50,7 +46,6 @@ INDEX_CONFIG = {
     },
     'MIDCPNIFTY': {
         'symbol': 'MIDCPNIFTY',
-        'atm_base': 12900,
         'strike_interval': 15,  # 25 point intervals
         'range': 150,  # +/- 300 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=MIDCPNIFTY',
@@ -118,6 +113,7 @@ def get_atm_strike(spot_price, index_name):
     config = INDEX_CONFIG[index_name]
     interval = config['strike_interval']
     return round(spot_price / interval) * interval
+
 def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
@@ -215,6 +211,7 @@ def get_support_resistance_zones(df, spot):
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
 
     return support_zone, resistance_zone
+
 def expiry_bias_score(row):
     score = 0
 
@@ -337,6 +334,7 @@ def create_export_data(df_summary, trade_logs, spot_price, index_name):
     filename = f"multi_index_analysis_{timestamp}.xlsx"
     
     return output.getvalue(), filename
+
 def handle_export_data(df_summary, spot_price, index_name):
     if 'export_data' in st.session_state and st.session_state.export_data:
         try:
@@ -499,6 +497,7 @@ def color_pcr(val):
         return 'background-color: #FFB6C1; color: black'
     else:
         return 'background-color: #FFFFE0; color: black'
+
 def analyze_index(index_name):
     """Analyze a single index"""
     config = INDEX_CONFIG[index_name]
@@ -532,6 +531,9 @@ def analyze_index(index_name):
         expiry = data['records']['expiryDates'][0]
         underlying = data['records']['underlyingValue']
 
+        # Calculate ATM strike dynamically
+        atm_strike = get_atm_strike(underlying, index_name)
+        
         # Open Interest Change Comparison
         total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / 100000
         total_pe_change = sum(item['PE']['changeinOpenInterest'] for item in records if 'PE' in item) / 100000
@@ -668,9 +670,6 @@ def analyze_index(index_name):
         df_pe = pd.DataFrame(puts)
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
-        # Calculate ATM strike based on index configuration
-        atm_strike = get_atm_strike(underlying, index_name)
-        
         # Filter strikes based on index configuration
         strike_range = config['range']
         df = df[df['strikePrice'].between(atm_strike - strike_range, atm_strike + strike_range)]
@@ -683,6 +682,7 @@ def analyze_index(index_name):
         st.error(f"❌ Error analyzing {index_name}: {e}")
         send_telegram_message(f"❌ Error analyzing {index_name}: {str(e)}", index_name)
         return None, None, None, None
+
 def process_index_signals(df, underlying, atm_strike, now, index_name):
     """Process signals for an index"""
     config = INDEX_CONFIG[index_name]
@@ -882,6 +882,7 @@ def process_index_signals(df, underlying, atm_strike, now, index_name):
             break
 
     return df_summary, styled_df, market_view, total_score, support_str, resistance_str, atm_signal, suggested_trade
+
 def analyze():
     """Main analysis function for all indices"""
     
