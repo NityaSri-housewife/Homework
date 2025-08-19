@@ -528,4 +528,658 @@ def analyze_volatility_skew(records, spot_price):
     return iv_data
 
 def calculate_market_breadth(records, spot_price):
-    """Calc
+    """Calculate advance-decline ratio and other breadth indicators"""
+    advances = 0
+    declines = 0
+    unchanged = 0
+    
+    for item in records:
+        if 'CE' in item and 'PE' in item:
+            # Simple breadth calculation based on OI changes
+            if item['CE']['changeinOpenInterest'] > 0 and item['PE']['changeinOpenInterest'] < 0:
+                advances += 1
+            elif item['CE']['changeinOpenInterest'] < 0 and item['PE']['changeinOpenInterest'] > 0:
+                declines += 1
+            else:
+                unchanged += 1
+    
+    advance_decline_ratio = advances / max(declines, 1)
+    return advance_decline_ratio, advances, declines, unchanged
+
+def create_option_chain_heatmap(df_summary):
+    """Create a heatmap visualization of the option chain"""
+    # Pivot table for heatmap
+    heatmap_data = df_summary.pivot_table(
+        values='PCR', 
+        index='strikePrice', 
+        columns='Level',
+        aggfunc='mean'
+    ).fillna(0)
+    
+    fig = px.imshow(heatmap_data, 
+                   title="Option Chain Heatmap",
+                   color_continuous_scale="RdBu_r",
+                   aspect="auto")
+    
+    return fig
+
+def calculate_historical_volatility(price_data, period=20):
+    """Calculate historical volatility"""
+    if len(price_data) < period:
+        return None
+        
+    returns = np.log(price_data['Close'] / price_data['Close'].shift(1))
+    volatility = returns.rolling(window=period).std() * np.sqrt(252) * 100
+    
+    return volatility.iloc[-1] if not volatility.empty else None
+
+def plot_max_pain(strike_pain, max_pain_strike, spot_price):
+    """Plot max pain visualization"""
+    strikes = sorted(strike_pain.keys())
+    pain_values = [strike_pain[s] for s in strikes]
+    
+    fig = go.Figure()
+    
+    # Add pain bars
+    fig.add_trace(go.Bar(
+        x=strikes,
+        y=pain_values,
+        name="Pain Value",
+        marker_color='lightblue'
+    ))
+    
+    # Add max pain line
+    fig.add_vline(
+        x=max_pain_strike, 
+        line_dash="dash", 
+        line_color="red",
+        annotation_text=f"Max Pain: {max_pain_strike}",
+        annotation_position="top"
+    )
+    
+    # Add spot price line
+    fig.add_vline(
+        x=spot_price, 
+        line_dash="dot", 
+        line_color="green",
+        annotation_text=f"Spot: {spot_price}",
+        annotation_position="bottom"
+    )
+    
+    fig.update_layout(
+        title="Max Pain Analysis",
+        xaxis_title="Strike Price",
+        yaxis_title="Pain Value",
+        showlegend=False,
+        template="plotly_white"
+    )
+    
+    return fig
+
+# ====================================
+# MAIN ANALYSIS FUNCTION
+# ====================================
+
+def analyze():
+    if 'trade_log' not in st.session_state:
+        st.session_state.trade_log = []
+        
+    try:
+        now = datetime.now(timezone("Asia/Kolkata"))
+        current_day = now.weekday()
+        current_time = now.time()
+        market_start = datetime.strptime("09:00", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
+
+        if current_day >= 5 or not (market_start <= current_time <= market_end):
+            st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
+            return
+            
+        headers = {"User-Agent": "Mozilla/5.0"}
+        session = requests.Session()
+        session.headers.update(headers)
+        session.get("https://www.nseindia.com", timeout=5)
+        
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={index_symbol}"
+        response = session.get(url, timeout=10)
+        data = response.json()
+        
+        records = data['records']['data']
+        expiry = data['records']['expiryDates'][0]
+        underlying = data['records']['underlyingValue']
+        
+        # Open Interest Change Comparison
+        total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / 100000
+        total_pe_change = sum(item['PE']['changeinOpenInterest'] for item in records if 'PE' in item) / 100000
+        
+        st.markdown("## 📊 Open Interest Change (in Lakhs)")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("📉 CALL ΔOI", f"{total_ce_change:+.1f}L", delta_color="inverse")
+        with col2:
+            st.metric("📈 PUT ΔOI", f"{total_pe_change:+.1f}L", delta_color="normal")
+            
+        if total_ce_change > total_pe_change:
+            st.error(f"🚨 Call OI Dominance (Difference: {abs(total_ce_change - total_pe_change):.1f}L)")
+        elif total_pe_change > total_ce_change:
+            st.success(f"🚀 Put OI Dominance (Difference: {abs(total_pe_change - total_ce_change):.1f}L)")
+        else:
+            st.info("⚖️ OI Changes Balanced")
+            
+        today = datetime.now(timezone("Asia/Kolkata"))
+        expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
+        is_expiry_day = today.date() == expiry_date.date()
+        
+        if is_expiry_day:
+            st.info("""
+            📅 EXPIRY DAY DETECTED
+            
+            Using specialized expiry day analysis
+            
+            IV Collapse, OI Unwind, Volume Spike expected
+            
+            Modified signals will be generated
+            """)
+            send_telegram_message("⚠️ Expiry Day Detected. Using special expiry analysis.")
+            
+            # ====================================
+            # MAX PAIN CALCULATION (NEW CODE)
+            # ====================================
+            st.markdown("### 📍 Max Pain Analysis")
+            
+            max_pain_strike, strike_pain = calculate_max_pain(records, underlying)
+            
+            if max_pain_strike:
+                st.metric("Max Pain Strike", max_pain_strike)
+                st.metric("Difference from Spot", f"{abs(underlying - max_pain_strike):.2f} points", 
+                         delta=f"{'Above' if underlying < max_pain_strike else 'Below'} Spot")
+                
+                # Plot max pain
+                fig = plot_max_pain(strike_pain, max_pain_strike, underlying)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Interpretation
+                if underlying < max_pain_strike:
+                    st.info("📈 Spot is below Max Pain - Potential upward pressure expected")
+                else:
+                    st.info("📉 Spot is above Max Pain - Potential downward pressure expected")
+            
+            # Volume Profile Analysis
+            st.markdown("### 📊 Volume Profile Analysis")
+            volume_profile = calculate_volume_profile(records)
+            
+            if volume_profile:
+                # Get top 5 strikes by volume
+                top_vol_strikes = sorted(volume_profile.items(), key=lambda x: x[1], reverse=True)[:5]
+                
+                st.write("**Top 5 Strikes by Volume:**")
+                for strike, volume in top_vol_strikes:
+                    st.write(f"- {strike}: {volume:,} contracts")
+                
+                # Plot volume profile
+                strikes = sorted(volume_profile.keys())
+                volumes = [volume_profile[s] for s in strikes]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=strikes,
+                    y=volumes,
+                    name="Volume",
+                    marker_color='lightgreen'
+                ))
+                
+                fig.update_layout(
+                    title="Volume Profile by Strike",
+                    xaxis_title="Strike Price",
+                    yaxis_title="Volume",
+                    showlegend=False,
+                    template="plotly_white"
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+        
+        current_time_str = now.strftime("%H:%M:%S")
+        
+        # Update price data
+        new_price_data = pd.DataFrame({
+            "Time": [current_time_str],
+            "Spot": [underlying]
+        })
+        
+        if st.session_state.price_data.empty:
+            st.session_state.price_data = new_price_data
+        else:
+            st.session_state.price_data = pd.concat([st.session_state.price_data, new_price_data], ignore_index=True)
+            
+        # Keep only last 100 data points
+        if len(st.session_state.price_data) > 100:
+            st.session_state.price_data = st.session_state.price_data.tail(100)
+            
+        # Prepare data for display
+        data_list = []
+        for item in records:
+            if 'CE' in item and 'PE' in item:
+                row = {
+                    'strikePrice': item['strikePrice'],
+                    'openInterest_CE': item['CE']['openInterest'],
+                    'changeinOpenInterest_CE': item['CE']['changeinOpenInterest'],
+                    'totalTradedVolume_CE': item['CE']['totalTradedVolume'],
+                    'lastPrice_CE': item['CE']['lastPrice'],
+                    'previousClose_CE': item['CE']['pchange'],
+                    'impliedVolatility_CE': item['CE']['impliedVolatility'],
+                    'bidQty_CE': item['CE']['bidQty'],
+                    'askQty_CE': item['CE']['askQty'],
+                    'openInterest_PE': item['PE']['openInterest'],
+                    'changeinOpenInterest_PE': item['PE']['changeinOpenInterest'],
+                    'totalTradedVolume_PE': item['PE']['totalTradedVolume'],
+                    'lastPrice_PE': item['PE']['lastPrice'],
+                    'previousClose_PE': item['PE']['pchange'],
+                    'impliedVolatility_PE': item['PE']['impliedVolatility'],
+                    'bidQty_PE': item['PE']['bidQty'],
+                    'askQty_PE': item['PE']['askQty'],
+                    'underlyingValue': underlying
+                }
+                data_list.append(row)
+                
+        df = pd.DataFrame(data_list)
+        
+        # Calculate PCR
+        df['PCR'] = df['openInterest_PE'] / df['openInterest_CE']
+        
+        # Determine support/resistance levels
+        df['Level'] = df.apply(determine_level, axis=1)
+        
+        # Calculate bid-ask pressure
+        df['Pressure'], df['PressureBias'] = zip(*df.apply(
+            lambda x: calculate_bid_ask_pressure(
+                x['bidQty_CE'], x['askQty_CE'], x['bidQty_PE'], x['askQty_PE']
+            ), axis=1
+        ))
+        
+        # Calculate Delta-Volume bias
+        df['DVP_CE'] = df.apply(
+            lambda x: delta_volume_bias(
+                x['lastPrice_CE'] - x['previousClose_CE'],
+                x['totalTradedVolume_CE'],
+                x['changeinOpenInterest_CE']
+            ), axis=1
+        )
+        
+        df['DVP_PE'] = df.apply(
+            lambda x: delta_volume_bias(
+                x['lastPrice_PE'] - x['previousClose_PE'],
+                x['totalTradedVolume_PE'],
+                x['changeinOpenInterest_PE']
+            ), axis=1
+        )
+        
+        # Calculate Long/Short buildup
+        df['Buildup_CE'] = df.apply(
+            lambda x: calculate_long_short_buildup(
+                x['lastPrice_CE'] - x['previousClose_CE'],
+                x['changeinOpenInterest_CE']
+            ), axis=1
+        )
+        
+        df['Buildup_PE'] = df.apply(
+            lambda x: calculate_long_short_buildup(
+                x['lastPrice_PE'] - x['previousClose_PE'],
+                x['changeinOpenInterest_PE']
+            ), axis=1
+        )
+        
+        # Calculate Greeks (simplified)
+        risk_free_rate = 0.05  # 5%
+        days_to_expiry = (expiry_date - today).days
+        time_to_expiry = max(days_to_expiry / 365, 0.0027)  # Minimum 1 day
+        
+        df['Delta_CE'], df['Gamma_CE'], df['Vega_CE'], df['Theta_CE'], df['Rho_CE'] = zip(*df.apply(
+            lambda x: calculate_greeks(
+                'CE', x['underlyingValue'], x['strikePrice'], 
+                time_to_expiry, risk_free_rate, x['impliedVolatility_CE'] / 100
+            ), axis=1
+        ))
+        
+        df['Delta_PE'], df['Gamma_PE'], df['Vega_PE'], df['Theta_PE'], df['Rho_PE'] = zip(*df.apply(
+            lambda x: calculate_greeks(
+                'PE', x['underlyingValue'], x['strikePrice'], 
+                time_to_expiry, risk_free_rate, x['impliedVolatility_PE'] / 100
+            ), axis=1
+        ))
+        
+        # Calculate bias scores
+        df['ChgOI_Bias'] = df.apply(
+            lambda x: 1 if x['changeinOpenInterest_PE'] > x['changeinOpenInterest_CE'] else -1, axis=1
+        )
+        
+        df['Volume_Bias'] = df.apply(
+            lambda x: 1 if x['totalTradedVolume_PE'] > x['totalTradedVolume_CE'] else -1, axis=1
+        )
+        
+        df['Gamma_Bias'] = df.apply(
+            lambda x: 1 if x['Gamma_PE'] > x['Gamma_CE'] else -1, axis=1
+        )
+        
+        df['AskQty_Bias'] = df.apply(
+            lambda x: 1 if x['askQty_PE'] > x['askQty_CE'] else -1, axis=1
+        )
+        
+        df['BidQty_Bias'] = df.apply(
+            lambda x: 1 if x['bidQty_PE'] > x['bidQty_CE'] else -1, axis=1
+        )
+        
+        df['IV_Bias'] = df.apply(
+            lambda x: 1 if x['impliedVolatility_PE'] > x['impliedVolatility_CE'] else -1, axis=1
+        )
+        
+        df['DVP_Bias'] = df.apply(
+            lambda x: 1 if x['DVP_PE'] == "Bullish" else -1 if x['DVP_CE'] == "Bullish" else 0, axis=1
+        )
+        
+        df['PressureBias'] = df.apply(
+            lambda x: 1 if x['PressureBias'] == "Bullish" else -1 if x['PressureBias'] == "Bearish" else 0, axis=1
+        )
+        
+        # Calculate final score
+        df['Final_Score'] = (
+            df['ChgOI_Bias'] * weights['ChgOI_Bias'] +
+            df['Volume_Bias'] * weights['Volume_Bias'] +
+            df['Gamma_Bias'] * weights['Gamma_Bias'] +
+            df['AskQty_Bias'] * weights['AskQty_Bias'] +
+            df['BidQty_Bias'] * weights['BidQty_Bias'] +
+            df['IV_Bias'] * weights['IV_Bias'] +
+            df['DVP_Bias'] * weights['DVP_Bias'] +
+            df['PressureBias'] * weights['PressureBias']
+        )
+        
+        df['Verdict'] = df['Final_Score'].apply(final_verdict)
+        
+        # Update support and resistance zones
+        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
+        st.session_state.support_zone = support_zone
+        st.session_state.resistance_zone = resistance_zone
+        
+        # Display results
+        st.markdown(f"## 📈 {selected_index} Options Analysis")
+        st.markdown(f"**Spot Price:** {underlying} | **Expiry:** {expiry}")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Support Zone", f"{support_zone[0]} - {support_zone[1]}" if support_zone[0] else "N/A")
+        with col2:
+            st.metric("Resistance Zone", f"{resistance_zone[0]} - {resistance_zone[1]}" if resistance_zone[0] else "N/A")
+        with col3:
+            st.metric("Time", current_time_str)
+            
+        # Display option chain
+        st.markdown("### 📋 Option Chain")
+        
+        # Filter for strikes near spot price
+        buffer = buffer_value
+        near_strikes = df[
+            (df['strikePrice'] >= underlying - buffer * strike_step) & 
+            (df['strikePrice'] <= underlying + buffer * strike_step)
+        ].copy()
+        
+        # Format display columns
+        display_cols = [
+            'strikePrice', 'openInterest_CE', 'changeinOpenInterest_CE', 'totalTradedVolume_CE',
+            'lastPrice_CE', 'impliedVolatility_CE', 'Buildup_CE', 'openInterest_PE',
+            'changeinOpenInterest_PE', 'totalTradedVolume_PE', 'lastPrice_PE',
+            'impliedVolatility_PE', 'Buildup_PE', 'PCR', 'Level', 'Verdict'
+        ]
+        
+        near_strikes_display = near_strikes[display_cols].copy()
+        near_strikes_display.columns = [
+            'Strike', 'CE OI', 'CE ΔOI', 'CE Volume', 'CE LTP', 'CE IV', 'CE Buildup',
+            'PE OI', 'PE ΔOI', 'PE Volume', 'PE LTP', 'PE IV', 'PE Buildup', 'PCR', 'Level', 'Verdict'
+        ]
+        
+        # Apply styling
+        styled_df = near_strikes_display.style.applymap(
+            color_pcr, subset=['PCR']
+        ).applymap(
+            color_pressure, subset=['CE Volume', 'PE Volume']
+        )
+        
+        st.dataframe(styled_df, use_container_width=True, height=400)
+        
+        # Plot price action with support/resistance
+        plot_price_with_sr()
+        
+        # Display trade signals
+        st.markdown("### 🚦 Trade Signals")
+        
+        # Find strikes in support/resistance zones
+        support_strikes = near_strikes[near_strikes['Level'] == "Support"]['strikePrice'].tolist()
+        resistance_strikes = near_strikes[near_strikes['Level'] == "Resistance"]['strikePrice'].tolist()
+        
+        # Generate signals
+        bullish_signals = near_strikes[
+            (near_strikes['Verdict'].isin(["Bullish", "Strong Bullish"])) &
+            (near_strikes['strikePrice'].isin(support_strikes))
+        ]
+        
+        bearish_signals = near_strikes[
+            (near_strikes['Verdict'].isin(["Bearish", "Strong Bearish"])) &
+            (near_strikes['strikePrice'].isin(resistance_strikes))
+        ]
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📈 Bullish Signals (Buy CE)")
+            if not bullish_signals.empty:
+                for _, signal in bullish_signals.iterrows():
+                    st.success(
+                        f"Strike: {signal['strikePrice']} | "
+                        f"Score: {signal['Final_Score']} | "
+                        f"LTP: {signal['lastPrice_CE']}"
+                    )
+            else:
+                st.info("No bullish signals detected")
+                
+        with col2:
+            st.markdown("#### 📉 Bearish Signals (Buy PE)")
+            if not bearish_signals.empty:
+                for _, signal in bearish_signals.iterrows():
+                    st.error(
+                        f"Strike: {signal['strikePrice']} | "
+                        f"Score: {signal['Final_Score']} | "
+                        f"LTP: {signal['lastPrice_PE']}"
+                    )
+            else:
+                st.info("No bearish signals detected")
+                
+        # PCR Analysis
+        st.markdown("### 📊 PCR Analysis")
+        
+        pcr_col1, pcr_col2 = st.columns(2)
+        
+        with pcr_col1:
+            current_pcr = df['PCR'].mean()
+            st.metric("Current PCR", f"{current_pcr:.2f}")
+            
+        with pcr_col2:
+            if current_pcr > st.session_state.pcr_threshold_bull:
+                st.success("Bullish PCR Signal")
+            elif current_pcr < st.session_state.pcr_threshold_bear:
+                st.error("Bearish PCR Signal")
+            else:
+                st.info("Neutral PCR Signal")
+                
+        # Update PCR history
+        new_pcr_entry = {
+            "Time": current_time_str,
+            "Strike": underlying,
+            "PCR": current_pcr,
+            "Signal": "Bullish" if current_pcr > st.session_state.pcr_threshold_bull else "Bearish" if current_pcr < st.session_state.pcr_threshold_bear else "Neutral"
+        }
+        
+        st.session_state.pcr_history = pd.concat([
+            st.session_state.pcr_history,
+            pd.DataFrame([new_pcr_entry])
+        ], ignore_index=True)
+        
+        # Keep only last 50 PCR readings
+        if len(st.session_state.pcr_history) > 50:
+            st.session_state.pcr_history = st.session_state.pcr_history.tail(50)
+            
+        # Plot PCR history
+        if not st.session_state.pcr_history.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=st.session_state.pcr_history['Time'],
+                y=st.session_state.pcr_history['PCR'],
+                mode='lines+markers',
+                name='PCR',
+                line=dict(color='blue', width=2)
+            )
+            
+            # Add threshold lines
+            fig.add_hline(
+                y=st.session_state.pcr_threshold_bull,
+                line_dash="dash",
+                line_color="green",
+                annotation_text="Bullish Threshold"
+            )
+            
+            fig.add_hline(
+                y=st.session_state.pcr_threshold_bear,
+                line_dash="dash",
+                line_color="red",
+                annotation_text="Bearish Threshold"
+            )
+            
+            fig.update_layout(
+                title="PCR History",
+                xaxis_title="Time",
+                yaxis_title="PCR Value",
+                template="plotly_white"
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+        # Enhanced features section
+        st.markdown("### 🚀 Enhanced Features")
+        
+        # Risk Management Calculator
+        st.markdown("#### 📋 Risk Management Calculator")
+        
+        risk_col1, risk_col2, risk_col3 = st.columns(3)
+        
+        with risk_col1:
+            capital = st.number_input("Capital (₹)", min_value=1000, value=100000, step=1000)
+            
+        with risk_col2:
+            risk_per_trade = st.number_input("Risk per Trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
+            
+        with risk_col3:
+            stop_loss_pct = st.number_input("Stop Loss (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
+            
+        if st.button("Calculate Position Size"):
+            if bullish_signals.empty and bearish_signals.empty:
+                st.warning("No signals available for position sizing")
+            else:
+                # Use first signal for calculation
+                if not bullish_signals.empty:
+                    signal = bullish_signals.iloc[0]
+                    entry_price = signal['lastPrice_CE']
+                    stop_loss = entry_price * (1 - stop_loss_pct / 100)
+                    position_size = calculate_position_sizing(capital, risk_per_trade, entry_price, stop_loss)
+                    
+                    st.success(
+                        f"**BUY CE {signal['strikePrice']}**\n\n"
+                        f"Entry: ₹{entry_price:.2f}\n"
+                        f"Stop Loss: ₹{stop_loss:.2f}\n"
+                        f"Position Size: {position_size} lots\n"
+                        f"Risk: ₹{capital * risk_per_trade / 100:.2f}"
+                    )
+                    
+                elif not bearish_signals.empty:
+                    signal = bearish_signals.iloc[0]
+                    entry_price = signal['lastPrice_PE']
+                    stop_loss = entry_price * (1 - stop_loss_pct / 100)
+                    position_size = calculate_position_sizing(capital, risk_per_trade, entry_price, stop_loss)
+                    
+                    st.success(
+                        f"**BUY PE {signal['strikePrice']}**\n\n"
+                        f"Entry: ₹{entry_price:.2f}\n"
+                        f"Stop Loss: ₹{stop_loss:.2f}\n"
+                        f"Position Size: {position_size} lots\n"
+                        f"Risk: ₹{capital * risk_per_trade / 100:.2f}"
+                    )
+                    
+        # Export data option
+        st.markdown("#### 💾 Data Export")
+        if st.button("Prepare Data Export"):
+            st.session_state.export_data = True
+            
+        handle_export_data(df, underlying)
+        
+        # Display enhanced trade log
+        display_enhanced_trade_log()
+        
+        # Display call log book
+        display_call_log_book()
+        
+        # Auto-update call log with current price
+        auto_update_call_log(underlying)
+        
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        st.info("Please ensure you're connected to the internet and try again.")
+
+# ====================================
+# STREAMLIT UI
+# ====================================
+
+st.title("📊 Advanced Options Analyzer")
+st.markdown("Real-time options analysis with advanced features")
+
+# Sidebar configuration
+st.sidebar.header("Configuration")
+
+# PCR Threshold Settings
+st.sidebar.subheader("PCR Thresholds")
+pcr_bull = st.sidebar.slider("Bullish PCR Threshold", 0.5, 2.0, st.session_state.pcr_threshold_bull, 0.1)
+pcr_bear = st.sidebar.slider("Bearish PCR Threshold", 0.5, 2.0, st.session_state.pcr_threshold_bear, 0.1)
+
+st.session_state.pcr_threshold_bull = pcr_bull
+st.session_state.pcr_threshold_bear = pcr_bear
+
+# Weight configuration
+st.sidebar.subheader("Signal Weights")
+for key in weights:
+    weights[key] = st.sidebar.slider(f"{key} Weight", 0, 5, weights[key], 1)
+
+# Analysis button
+if st.sidebar.button("🔄 Run Analysis", type="primary"):
+    analyze()
+
+# Display current settings
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Current Settings")
+st.sidebar.write(f"**Index:** {selected_index}")
+st.sidebar.write(f"**Bullish PCR:** > {pcr_bull}")
+st.sidebar.write(f"**Bearish PCR:** < {pcr_bear}")
+
+# Instructions
+st.sidebar.markdown("---")
+st.sidebar.markdown("""
+### 📖 Instructions
+1. Select an index
+2. Adjust PCR thresholds if needed
+3. Click 'Run Analysis'
+4. Monitor signals and trade accordingly
+""")
+
+# Main area
+analyze()
+
+# Footer
+st.markdown("---")
+st.markdown("""
+**Disclaimer:** This tool is for educational purposes only. Trading options involves significant risk.
+Always do your own research and consider consulting with a financial advisor before making any investment decisions.
+""")
