@@ -337,7 +337,7 @@ def create_export_data(df_summary, trade_logs, spot_price, index_name):
     filename = f"multi_index_analysis_{timestamp}.xlsx"
     
     return output.getvalue(), filename
-  def handle_export_data(df_summary, spot_price, index_name):
+def handle_export_data(df_summary, spot_price, index_name):
     if 'export_data' in st.session_state and st.session_state.export_data:
         try:
             # Collect all trade logs
