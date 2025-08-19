@@ -882,7 +882,7 @@ def process_index_signals(df, underlying, atm_strike, now, index_name):
             break
 
     return df_summary, styled_df, market_view, total_score, support_str, resistance_str, atm_signal, suggested_trade
-        def analyze():
+def analyze():
     """Main analysis function for all indices"""
     
     # Index Selection
