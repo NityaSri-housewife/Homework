@@ -118,7 +118,7 @@ def get_atm_strike(spot_price, index_name):
     config = INDEX_CONFIG[index_name]
     interval = config['strike_interval']
     return round(spot_price / interval) * interval
-  def calculate_greeks(option_type, S, K, T, r, sigma):
+def calculate_greeks(option_type, S, K, T, r, sigma):
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
     delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
