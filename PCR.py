@@ -9,6 +9,8 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
+import json  # Added missing import
+import time  # Added for retry logic
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -375,6 +377,32 @@ def display_call_log_book():
             mime="text/csv"
         )
 
+def get_nse_session():
+    """Create and return an NSE session with proper headers"""
+    session = requests.Session()
+    
+    # Set proper headers to mimic a browser request
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0"
+    }
+    
+    session.headers.update(headers)
+    
+    # First request to establish session and get cookies
+    try:
+        session.get("https://www.nseindia.com", timeout=10)
+        time.sleep(1)  # Small delay to ensure session is established
+    except Exception as e:
+        st.error(f"Failed to establish NSE session: {e}")
+    
+    return session
+
 def analyze():
     """Main analysis function"""
     if 'trade_log' not in st.session_state:
@@ -392,17 +420,8 @@ def analyze():
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
             return
 
-        # Initialize session
-        headers = {"User-Agent": "Mozilla/5.0"}
-        session = requests.Session()
-        session.headers.update(headers)
-        
-        # First request to establish session
-        try:
-            session.get("https://www.nseindia.com", timeout=5)
-        except requests.exceptions.RequestException as e:
-            st.error(f"❌ Failed to establish NSE session: {e}")
-            return
+        # Initialize NSE session with proper headers
+        session = get_nse_session()
 
         # Get VIX data first
         vix_url = "https://www.nseindia.com/api/equity-stockIndices?index=INDIA%20VIX"
