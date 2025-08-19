@@ -18,8 +18,8 @@ st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 min
 INDEX_CONFIG = {
     'NIFTY': {
         'symbol': 'NIFTY',
-        'strike_interval': 25,  # 25 point intervals
-        'range': 300,  # +/- 300 points from ATM
+        'strike_interval': 50,  # 25 point intervals
+        'range': 200,  # +/- 300 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY',
         'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050'
     },
@@ -39,8 +39,8 @@ INDEX_CONFIG = {
     },
     'FINNIFTY': {
         'symbol': 'FINNIFTY',
-        'strike_interval': 25,  # 40 point intervals
-        'range': 300,  # +/- 400 points from ATM
+        'strike_interval': 50,  # 40 point intervals
+        'range': 200,  # +/- 400 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=FINNIFTY',
         'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20FINANCIAL%20SERVICES'
     },
