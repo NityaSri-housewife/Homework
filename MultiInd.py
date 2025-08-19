@@ -499,7 +499,7 @@ def color_pcr(val):
         return 'background-color: #FFB6C1; color: black'
     else:
         return 'background-color: #FFFFE0; color: black'
-      def analyze_index(index_name):
+def analyze_index(index_name):
     """Analyze a single index"""
     config = INDEX_CONFIG[index_name]
     trade_log_key = f'trade_log_{index_name}'
