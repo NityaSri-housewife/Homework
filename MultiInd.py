@@ -11,8 +11,23 @@ import plotly.graph_objects as go
 import io
 
 # === Streamlit Config ===
-st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
+st.set_page_config(page_title="Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 min
+
+# === Index Configuration ===
+indices = {
+    "Nifty": {"strike_step": 50, "buffer": 20, "symbol": "NIFTY"},
+    "BankNifty": {"strike_step": 100, "buffer": 50, "symbol": "BANKNIFTY"},
+    "NiftyNext50": {"strike_step": 100, "buffer": 50, "symbol": "NIFTYNEXT50"},
+    "FinNifty": {"strike_step": 50, "buffer": 10, "symbol": "FINNIFTY"},
+    "MidCapNifty": {"strike_step": 50, "buffer": 10, "symbol": "MIDCPNIFTY"}
+}
+
+# Add index selection dropdown at the top
+selected_index = st.sidebar.selectbox("Select Index", list(indices.keys()))
+strike_step = indices[selected_index]["strike_step"]
+buffer_value = indices[selected_index]["buffer"]
+index_symbol = indices[selected_index]["symbol"]
 
 # Initialize session state for price data
 if 'price_data' not in st.session_state:
@@ -133,11 +148,20 @@ def determine_level(row):
     else:
         return "Neutral"
 
-def is_in_zone(spot, strike, level):
+# Updated is_in_zone function with dynamic buffer
+def is_in_zone(index_name, spot, strike, level):
+    buffers = {
+        "Nifty": 20,
+        "BankNifty": 50,
+        "NiftyNext50": 50,
+        "FinNifty": 10,
+        "MidCapNifty": 10
+    }
+    buffer = buffers.get(index_name, 20)
     if level == "Support":
-        return strike - 20 <= spot <= strike + 20
+        return strike - buffer <= spot <= strike + buffer
     elif level == "Resistance":
-        return strike - 20 <= spot <= strike + 20
+        return strike - buffer <= spot <= strike + buffer
     return False
 
 def get_support_resistance_zones(df, spot):
@@ -256,7 +280,7 @@ def create_export_data(df_summary, trade_log, spot_price):
             st.session_state.pcr_history.to_excel(writer, sheet_name='PCR_History', index=False)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"nifty_analysis_{timestamp}.xlsx"
+    filename = f"{selected_index.lower()}_analysis_{timestamp}.xlsx"
     
     return output.getvalue(), filename
 
@@ -340,7 +364,7 @@ def plot_price_with_sr():
             line=dict(color='red', dash='dot')
         ))
     fig.update_layout(
-        title="Nifty Spot Price Action with Support & Resistance",
+        title=f"{selected_index} Spot Price Action with Support & Resistance",
         xaxis_title="Time",
         yaxis_title="Spot Price",
         template="plotly_white",
@@ -437,7 +461,7 @@ def analyze():
         session = requests.Session()
         session.headers.update(headers)
         session.get("https://www.nseindia.com", timeout=5)
-        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={index_symbol}"
         response = session.get(url, timeout=10)
         data = response.json()
 
@@ -488,7 +512,7 @@ def analyze():
             
             st.markdown(f"### 📍 Spot Price: {underlying}")
             
-            prev_close_url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
+            prev_close_url = f"https://www.nseindia.com/api/equity-stockIndices?index={index_symbol.replace('NIFTY', 'NIFTY 50') if index_symbol == 'NIFTY' else index_symbol}"
             prev_close_data = session.get(prev_close_url, timeout=10).json()
             prev_close = prev_close_data['data'][0]['previousClose']
             
@@ -578,16 +602,17 @@ def analyze():
         df_pe = pd.DataFrame(puts)
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
+        # Filter for ATM ±2 strikes only
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-        df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
+        min_strike = atm_strike - 2 * strike_step
+        max_strike = atm_strike + 2 * strike_step
+        df = df[df['strikePrice'].between(min_strike, max_strike)]
+        
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
 
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
-            if abs(row['strikePrice'] - atm_strike) > 100:
-                continue
-
             # Add bid/ask pressure calculation
             bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
                 row['bidQty_CE'], row['askQty_CE'], 
@@ -707,7 +732,7 @@ def analyze():
             pass
         else:
             for row in bias_results:
-                if not is_in_zone(underlying, row['Strike'], row['Level']):
+                if not is_in_zone(selected_index, underlying, row['Strike'], row['Level']):
                     continue
 
                 atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
@@ -871,4 +896,5 @@ def analyze():
 
 # === Main Function Call ===
 if __name__ == "__main__":
+    st.title(f"{selected_index} Options Chain Analysis")
     analyze()
