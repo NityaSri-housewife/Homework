@@ -683,7 +683,7 @@ def analyze_index(index_name):
         st.error(f"❌ Error analyzing {index_name}: {e}")
         send_telegram_message(f"❌ Error analyzing {index_name}: {str(e)}", index_name)
         return None, None, None, None
-      def process_index_signals(df, underlying, atm_strike, now, index_name):
+def process_index_signals(df, underlying, atm_strike, now, index_name):
     """Process signals for an index"""
     config = INDEX_CONFIG[index_name]
     trade_log_key = f'trade_log_{index_name}'
