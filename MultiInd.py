@@ -43,7 +43,7 @@ INDEX_CONFIG = {
     'FINNIFTY': {
         'symbol': 'FINNIFTY',
         'atm_base': 26600,
-        'strike_interval': 40,  # 40 point intervals
+        'strike_interval': 25,  # 40 point intervals
         'range': 300,  # +/- 400 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=FINNIFTY',
         'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20FINANCIAL%20SERVICES'
