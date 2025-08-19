@@ -51,8 +51,8 @@ INDEX_CONFIG = {
     'MIDCPNIFTY': {
         'symbol': 'MIDCPNIFTY',
         'atm_base': 12900,
-        'strike_interval': 25,  # 25 point intervals
-        'range': 300,  # +/- 300 points from ATM
+        'strike_interval': 15,  # 25 point intervals
+        'range': 150,  # +/- 300 points from ATM
         'api_url': 'https://www.nseindia.com/api/option-chain-indices?symbol=MIDCPNIFTY',
         'prev_close_url': 'https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%20MIDCAP%20SELECT'
     }
