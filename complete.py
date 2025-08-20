@@ -322,7 +322,7 @@ def plot_price_with_sr():
         mode='lines+markers',
         name='Spot Price',
         line=dict(color='blue', width=2)
-    )
+    ))
     if all(support_zone) and None not in support_zone:
         fig.add_shape(
             type="rect",
@@ -338,7 +338,7 @@ def plot_price_with_sr():
             mode='lines',
             name='Support Low',
             line=dict(color='green', dash='dash')
-        )
+        ))
         fig.add_trace(go.Scatter(
             x=[price_df['Time'].min(), price_df['Time'].max()],
             y=[support_zone[1], support_zone[1]],
@@ -362,7 +362,7 @@ def plot_price_with_sr():
             mode='lines',
             name='Resistance Low',
             line=dict(color='red', dash='dash')
-        )
+        ))
         fig.add_trace(go.Scatter(
             x=[price_df['Time'].min(), price_df['Time'].max()],
             y=[resistance_zone[1], resistance_zone[1]],
@@ -378,7 +378,7 @@ def plot_price_with_sr():
         template="plotly_white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(ffig, use_container_width=True)
 
 def auto_update_call_log(current_price):
     for call in st.session_state.call_log_book:
@@ -823,7 +823,7 @@ def analyze():
         df['Buildup_PE'] = df.apply(
             lambda x: calculate_long_short_buildup(
                 x['lastPrice_PE'] - x['previousClose_PE'],
-                x['changeinOpenInterest_PE']
+                x['changeinOpenInterest_PE'
             ), axis=1
         )
         
@@ -1033,7 +1033,7 @@ def analyze():
                 mode='lines+markers',
                 name='PCR',
                 line=dict(color='blue', width=2)
-            )
+            ))
             
             # Add threshold lines
             fig.add_hline(
