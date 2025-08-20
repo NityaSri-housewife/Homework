@@ -1020,7 +1020,7 @@ def analyze():
         # Plot price action
         plot_price_with_sr()
 
-        if suggested_trade:
+    if suggested_trade:
     st.info(f"🔹 {atm_signal}\n{suggested_trade}")
 
 # Option Chain Summary
