@@ -697,6 +697,10 @@ def analyze():
             vp_score = row['VP_Score']
             iv_skew = row['IV_Skew']
             
+            # Calculate VP and IV Skew biases
+            vp_bias = "Bullish" if vp_score > 0.2 else "Bearish" if vp_score < -0.2 else "Neutral"
+            iv_skew_bias = "Bullish" if iv_skew < -2 else "Bearish" if iv_skew > 2 else "Neutral"
+            
             score = 0
             row_data = {
                 "Strike": row['strikePrice'],
@@ -715,9 +719,11 @@ def analyze():
                 # Add Long/Short Build-up columns
                 "CE_Buildup": ce_buildup,
                 "PE_Buildup": pe_buildup,
-                # Add Volume Profile and IV Skew
+                # Add Volume Profile and IV Skew with their biases
                 "VP_Score": vp_score,
-                "IV_Skew": iv_skew
+                "VP_Bias": vp_bias,
+                "IV_Skew": iv_skew,
+                "IV_Skew_Bias": iv_skew_bias
             }
 
             # Calculate PCR Signal (will be added later in the merge)
@@ -732,8 +738,8 @@ def analyze():
                 "CE_Buildup": row_data["CE_Buildup"],
                 "PE_Buildup": row_data["PE_Buildup"],
                 "PCR_Signal": pcr_signal,
-                "VP_Score": "Bullish" if vp_score > 0.2 else "Bearish" if vp_score < -0.2 else "Neutral",
-                "IV_Skew": "Bullish" if iv_skew < -2 else "Bearish" if iv_skew > 2 else "Neutral"
+                "VP_Score": vp_bias,
+                "IV_Skew": iv_skew_bias
             }
             
             for factor, value in score_factors.items():
@@ -803,11 +809,22 @@ def analyze():
             # Update verdict after PCR adjustment
             df_summary.at[idx, 'Verdict'] = final_verdict(df_summary.at[idx, 'BiasScore'])
 
+        # Add styling for the new bias columns
+        def color_bias(val):
+            if val == "Bullish":
+                return 'background-color: #90EE90; color: black'  # Light green for bullish
+            elif val == "Bearish":
+                return 'background-color: #FFB6C1; color: black'  # Light red for bearish
+            else:
+                return 'background-color: #FFFFE0; color: black'   # Light yellow for neutral
+
         styled_df = (df_summary.style
                     .applymap(color_pcr, subset=['PCR'])
                     .applymap(color_pressure, subset=['BidAskPressure'])
                     .applymap(color_vp, subset=['VP_Score'])
-                    .applymap(color_iv_skew, subset=['IV_Skew']))
+                    .applymap(color_iv_skew, subset=['IV_Skew'])
+                    .applymap(color_bias, subset=['VP_Bias', 'IV_Skew_Bias', 'ChgOI_Bias', 'AskQty_Bias', 
+                                                'DVP_Bias', 'PressureBias', 'PCR_Signal']))
         
         df_summary = df_summary.drop(columns=['strikePrice'])
         
