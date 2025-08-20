@@ -201,9 +201,9 @@ def expiry_bias_score(row):
         if row['bidQty_PE'] > row['bidQty_CE'] * 1.5:
             score -= 1
 
-    if row['totalTeredVolume_CE'] > 2 * row['openInterest_CE']:
+    if row['totalTradedVolume_CE'] > 2 * row['openInterest_CE']:
         score -= 0.5
-    if row['totalTeredVolume_PE'] > 2 * row['openInterest_PE']:
+    if row['totalTradedVolume_PE'] > 2 * row['openInterest_PE']:
         score += 0.5
 
     if 'underlyingValue' in row:
@@ -482,10 +482,10 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("22:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
-            st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
+            st.warning("⏳ Market Closed (Mon-Frid 9:00-15:40)")
             return
 
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -494,6 +494,7 @@ def analyze():
         
         # Fix for JSON error - better error handling and retry logic
         max_retries = 3
+        data = None
         for attempt in range(max_retries):
             try:
                 session.get("https://www.nseindia.com", timeout=5)
@@ -525,6 +526,10 @@ def analyze():
                     st.error("❌ Failed to fetch data after multiple attempts. Please try again later.")
                     return
                 continue
+
+        if data is None:
+            st.error("❌ No data received from API")
+            return
 
         records = data['records']['data']
         expiry = data['records']['expiryDates'][0]
@@ -727,7 +732,12 @@ def analyze():
         df['IV_Skew'] = df['impliedVolatility_PE'] - df['impliedVolatility_CE']
         
         # === OI BIAS CALCULATION ===
-        df['OI_Ratio'] = df['openInterest_CE'] / (df['openInterest_CE'] + df['openInterest_PE'])
+        # Fix for OI_Bias error - ensure proper calculation
+        df['OI_Ratio'] = np.where(
+            (df['openInterest_CE'] + df['openInterest_PE']) > 0,
+            df['openInterest_CE'] / (df['openInterest_CE'] + df['openInterest_PE']),
+            0.5  # Default to neutral if no OI
+        )
         df['OI_Bias'] = np.where(
             df['OI_Ratio'] > 0.6, "Bearish",
             np.where(df['OI_Ratio'] < 0.4, "Bullish", "Neutral")
@@ -816,25 +826,37 @@ def analyze():
         df_summary = pd.DataFrame(bias_results)
         
         # === PCR CALCULATION AND MERGE ===
+        # Ensure all required columns exist before merging
+        required_columns = ['strikePrice', 'openInterest_CE', 'openInterest_PE', 
+                           'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
+                           'VP_Score', 'IV_Skew', 'OI_Ratio', 'OI_Bias']
+        
+        # Check if all required columns exist in df
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            st.error(f"❌ Missing columns in dataframe: {missing_columns}")
+            for col in missing_columns:
+                if col == 'OI_Bias':
+                    df['OI_Bias'] = "Neutral"  # Default value
+                elif col == 'OI_Ratio':
+                    df['OI_Ratio'] = 0.5  # Default value
+                else:
+                    df[col] = 0  # Default value for other missing columns
+        
         df_summary = pd.merge(
             df_summary,
-            df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
-                'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
-                'VP_Score', 'IV_Skew', 'OI_Ratio', 'OI_Bias']],
+            df[required_columns],
             left_on='Strike',
             right_on='strikePrice',
             how='left'
         )
 
-        df_summary['PCR'] = (
-            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
-            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
-        )
-
+        # Fix PCR calculation to handle division by zero
         df_summary['PCR'] = np.where(
             (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
             0,
-            df_summary['PCR']
+            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
+            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
         )
 
         df_summary['PCR'] = df_summary['PCR'].round(2)
@@ -877,9 +899,13 @@ def analyze():
             })
             st.session_state.pcr_history = pd.concat([st.session_state.pcr_history, new_pcr_data])
 
-        atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
+        # Get ATM row safely
+        atm_row = None
+        if not df_summary[df_summary["Zone"] == "ATM"].empty:
+            atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0]
+        
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
-        atm_oi_bias = atm_row['OI_Bias'] if atm_row is not None else None
+        atm_oi_bias = atm_row['OI_Bias'] if atm_row is not None and 'OI_Bias' in atm_row else "Neutral"
         support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
 
         st.session_state.support_zone = support_zone
@@ -903,13 +929,19 @@ def analyze():
                 if not is_in_zone(selected_index, underlying, row['Strike'], row['Level']):
                     continue
 
-                atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
-                atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
-                atm_oi_bias = atm_row['OI_Bias'] if atm_row is not None else None
-                pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
-                vp_score = df_summary[df_summary['Strike'] == row['Strike']]['VP_Score'].values[0]
-                iv_skew = df_summary[df_summary['Strike'] == row['Strike']]['IV_Skew'].values[0]
-                oi_bias = df_summary[df_summary['Strike'] == row['Strike']]['OI_Bias'].values[0]
+                atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None and 'ChgOI_Bias' in atm_row else None
+                atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None and 'AskQty_Bias' in atm_row else None
+                atm_oi_bias = atm_row['OI_Bias'] if atm_row is not None and 'OI_Bias' in atm_row else None
+                
+                # Get current strike data safely
+                current_strike_data = df_summary[df_summary['Strike'] == row['Strike']]
+                if current_strike_data.empty:
+                    continue
+                    
+                pcr_signal = current_strike_data['PCR_Signal'].values[0] if 'PCR_Signal' in current_strike_data.columns else "Neutral"
+                vp_score = current_strike_data['VP_Score'].values[0] if 'VP_Score' in current_strike_data.columns else 0
+                iv_skew = current_strike_data['IV_Skew'].values[0] if 'IV_Skew' in current_strike_data.columns else 0
+                oi_bias = current_strike_data['OI_Bias'].values[0] if 'OI_Bias' in current_strike_data.columns else "Neutral"
 
                 if st.session_state.use_pcr_filter:
                     # Support + Bullish conditions with PCR confirmation
@@ -949,8 +981,8 @@ def analyze():
                           and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                           and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
                           and (atm_oi_bias == "Bearish" or atm_oi_bias is None)
-                        and vp_score < 0  # Volume profile bearish
-                        and iv_skew > 0):  # IV skew bearish
+                          and vp_score < 0  # Volume profile bearish
+                          and iv_skew > 0):  # IV skew bearish
                         option_type = 'PE'
                     else:
                         continue
@@ -969,7 +1001,7 @@ def analyze():
                     f"📍 Spot: {underlying}\n"
                     f"🔹 {atm_signal}\n"
                     f"{suggested_trade}\n"
-                    f"PCR: {df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0]} ({pcr_signal})\n"
+                    f"PCR: {current_strike_data['PCR'].values[0] if 'PCR' in current_strike_data.columns else 0} ({pcr_signal})\n"
                     f"VP Score: {vp_score:.2f}\n"
                     f"IV Skew: {iv_skew:.2f}\n"
                     f"OI Bias: {oi_bias}\n"
@@ -979,7 +1011,7 @@ def analyze():
                     f"📈 Resistance Zone: {resistance_str}"
                 )
 
-                st.session_state.trade_log.append({
+                trade_data = {
                     "Time": now.strftime("%H:%M:%S"),
                     "Strike": row['Strike'],
                     "Type": option_type,
@@ -988,12 +1020,17 @@ def analyze():
                     "SL": stop_loss,
                     "TargetHit": False,
                     "SLHit": False,
-                    "PCR": df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0],
+                    "PCR": current_strike_data['PCR'].values[0] if 'PCR' in current_strike_data.columns else 0,
                     "PCR_Signal": pcr_signal,
                     "VP_Score": vp_score,
-                    "IV_Skew": iv_skew,
-                    "OI_Bias": oi_bias
-                })
+                    "IV_Skew": iv_skew
+                }
+                
+                # Add OI_Bias only if it exists
+                if 'OI_Bias' in current_strike_data.columns:
+                    trade_data["OI_Bias"] = oi_bias
+                
+                st.session_state.trade_log.append(trade_data)
 
                 signal_sent = True
                 break
@@ -1079,7 +1116,7 @@ def analyze():
         # Enhanced Trade Log
         display_enhanced_trade_log()
         
-        # Export functionality
+                # Export functionality
         st.markdown("---")
         st.markdown("### 📥 Data Export")
         if st.button("Prepare Excel Export"):
@@ -1095,6 +1132,8 @@ def analyze():
 
     except Exception as e:
         st.error(f"❌ Error: {e}")
+        import traceback
+        st.error(f"❌ Traceback: {traceback.format_exc()}")
         send_telegram_message(f"❌ Error: {str(e)}")
 
 # === Main Function Call ===
