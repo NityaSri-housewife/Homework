@@ -1021,9 +1021,9 @@ def analyze():
         plot_price_with_sr()
 
         if suggested_trade:
-            st.info(f"🔹 {atm_signal}\n{suggested_trade}")
-        
-       # Option Chain Summary
+    st.info(f"🔹 {atm_signal}\n{suggested_trade}")
+
+# Option Chain Summary
 try:
     with st.expander("📊 Option Chain Summary"):
         st.info(f"""
@@ -1035,8 +1035,8 @@ try:
         st.dataframe(styled_df)
 except Exception as e:
     st.error(f"Error displaying option chain: {e}")
-        
-        # Trade Log
+
+# Trade Log
         if st.session_state.trade_log:
             st.markdown("### 📜 Trade Log")
             st.dataframe(pd.DataFrame(st.session_state.trade_log))
