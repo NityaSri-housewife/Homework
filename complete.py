@@ -324,7 +324,7 @@ def plot_price_with_sr():
         line=dict(color='blue', width=2)
     )
     
-    if all(support_zone) and None not in support_zone:
+     if all(support_zone) and None not in support_zone:
         fig.add_shape(
             type="rect",
             xref="paper", yref="y",
