@@ -666,6 +666,7 @@ def analyze():
         df = df[df['strikePrice'].between(min_strike, max_strike)]
         
         # === VOLUME PROFILE AND IV SKEW FOR NON-EXPIRY DAYS ===
+        # Calculate these first before creating the summary
         df['Total_Volume'] = df['totalTradedVolume_CE'] + df['totalTradedVolume_PE']
         df['VP_Score'] = np.where(
             df['Total_Volume'] > 0,
@@ -692,6 +693,10 @@ def analyze():
             ce_buildup = calculate_long_short_buildup(ce_price_change, row['changeinOpenInterest_CE'])
             pe_buildup = calculate_long_short_buildup(pe_price_change, row['changeinOpenInterest_PE'])
             
+            # Get VP_Score and IV_Skew from the row (already calculated above)
+            vp_score = row['VP_Score']
+            iv_skew = row['IV_Skew']
+            
             score = 0
             row_data = {
                 "Strike": row['strikePrice'],
@@ -711,8 +716,8 @@ def analyze():
                 "CE_Buildup": ce_buildup,
                 "PE_Buildup": pe_buildup,
                 # Add Volume Profile and IV Skew
-                "VP_Score": row['VP_Score'],
-                "IV_Skew": row['IV_Skew']
+                "VP_Score": vp_score,
+                "IV_Skew": iv_skew
             }
 
             # Calculate PCR Signal (will be added later in the merge)
@@ -727,8 +732,8 @@ def analyze():
                 "CE_Buildup": row_data["CE_Buildup"],
                 "PE_Buildup": row_data["PE_Buildup"],
                 "PCR_Signal": pcr_signal,
-                "VP_Score": "Bullish" if row_data["VP_Score"] > 0.2 else "Bearish" if row_data["VP_Score"] < -0.2 else "Neutral",
-                "IV_Skew": "Bullish" if row_data["IV_Skew"] < -2 else "Bearish" if row_data["IV_Skew"] > 2 else "Neutral"
+                "VP_Score": "Bullish" if vp_score > 0.2 else "Bearish" if vp_score < -0.2 else "Neutral",
+                "IV_Skew": "Bullish" if iv_skew < -2 else "Bearish" if iv_skew > 2 else "Neutral"
             }
             
             for factor, value in score_factors.items():
@@ -760,8 +765,7 @@ def analyze():
         df_summary = pd.merge(
             df_summary,
             df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
-                'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
-                'VP_Score', 'IV_Skew']],  # Include the new columns
+                'changeinOpenInterest_CE', 'changeinOpenInterest_PE']],
             left_on='Strike',
             right_on='strikePrice',
             how='left'
@@ -845,8 +849,8 @@ def analyze():
                 atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
                 atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
                 pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
-                vp_score = df_summary[df_summary['Strike'] == row['Strike']]['VP_Score'].values[0]
-                iv_skew = df_summary[df_summary['Strike'] == row['Strike']]['IV_Skew'].values[0]
+                vp_score = row['VP_Score']  # Now directly accessible from the row
+                iv_skew = row['IV_Skew']   # Now directly accessible from the row
 
                 if st.session_state.use_pcr_filter:
                     # Support + Bullish conditions with PCR confirmation
