@@ -9,6 +9,7 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
+import json
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -27,12 +28,14 @@ if 'support_zone' not in st.session_state:
     st.session_state.support_zone = (None, None)
 if 'resistance_zone' not in st.session_state:
     st.session_state.resistance_zone = (None, None)
+if 'security_ids' not in st.session_state:
+    st.session_state.security_ids = {}
 
 # Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
-    st.session_state.pcr_threshold_bull = 2.0  # Will be adjusted based on VIX
+    st.session_state.pcr_threshold_bull = 2.0
 if 'pcr_threshold_bear' not in st.session_state:
-    st.session_state.pcr_threshold_bear = 0.4  # Will be adjusted based on VIX
+    st.session_state.pcr_threshold_bear = 0.4
 if 'use_pcr_filter' not in st.session_state:
     st.session_state.use_pcr_filter = True
 if 'pcr_history' not in st.session_state:
@@ -58,32 +61,88 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
 
+def get_security_id(symbol_name, instrument_type="INDEX"):
+    """Automatically find security ID for a given symbol"""
+    headers = {
+        "access-token": DHAN_ACCESS_TOKEN
+    }
+    
+    # Check if we already have this security ID cached
+    if symbol_name in st.session_state.security_ids:
+        return st.session_state.security_ids[symbol_name]
+    
+    try:
+        # Try to search for the security
+        search_url = f"{DHAN_BASE_URL}/search?q={symbol_name}"
+        response = requests.get(search_url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            results = response.json()
+            
+            if results and isinstance(results, list):
+                for result in results:
+                    if (result.get('symbol', '').upper() == symbol_name.upper() or 
+                        result.get('name', '').upper() == symbol_name.upper()):
+                        
+                        security_id = result.get('securityId')
+                        if security_id:
+                            # Cache the security ID for future use
+                            st.session_state.security_ids[symbol_name] = security_id
+                            return security_id
+            
+        # If search fails or doesn't return results, try common security IDs
+        common_ids = {
+            "NIFTY": "999920000",
+            "BANKNIFTY": "999920005", 
+            "INDIAVIX": "999920013",
+            "NIFTY50": "999920000",
+            "NIFTY 50": "999920000"
+        }
+        
+        if symbol_name.upper() in common_ids:
+            security_id = common_ids[symbol_name.upper()]
+            st.session_state.security_ids[symbol_name] = security_id
+            return security_id
+            
+        # If all else fails, return a default value
+        st.warning(f"⚠️ Could not find security ID for {symbol_name}, using default")
+        return "999920000"
+        
+    except Exception as e:
+        st.error(f"❌ Error finding security ID for {symbol_name}: {e}")
+        # Return a default value
+        return "999920000"
+
 def get_dhan_option_chain():
-    """Fetch option chain data from Dhan API"""
+    """Fetch option chain data from Dhan API with automatic security ID detection"""
     headers = {
         "access-token": DHAN_ACCESS_TOKEN
     }
     
     try:
+        # Get security IDs
+        nifty_security_id = get_security_id("NIFTY")
+        vix_security_id = get_security_id("INDIAVIX")
+        
         # Get Nifty spot price
-        spot_url = f"{DHAN_BASE_URL}/quotes?symbol=NIFTY"
-        spot_response = requests.get(spot_url, headers=headers)
+        spot_url = f"{DHAN_BASE_URL}/quotes?secId={nifty_security_id}&exchange=NSE"
+        spot_response = requests.get(spot_url, headers=headers, timeout=10)
         spot_response.raise_for_status()
         spot_data = spot_response.json()
-        underlying = spot_data[0]['lastPrice']
+        underlying = spot_data[0]['lastPrice'] if spot_data and len(spot_data) > 0 else 0
         
         # Get option chain data
-        option_chain_url = f"{DHAN_BASE_URL}/options?symbol=NIFTY"
-        option_response = requests.get(option_chain_url, headers=headers)
+        option_chain_url = f"{DHAN_BASE_URL}/options/chains?secId={nifty_security_id}&exchange=NSE"
+        option_response = requests.get(option_chain_url, headers=headers, timeout=10)
         option_response.raise_for_status()
         option_data = option_response.json()
         
         # Get VIX data
-        vix_url = f"{DHAN_BASE_URL}/quotes?symbol=INDIAVIX"
-        vix_response = requests.get(vix_url, headers=headers)
+        vix_url = f"{DHAN_BASE_URL}/quotes?secId={vix_security_id}&exchange=NSE"
+        vix_response = requests.get(vix_url, headers=headers, timeout=10)
         vix_response.raise_for_status()
         vix_data = vix_response.json()
-        vix_value = vix_data[0]['lastPrice']
+        vix_value = vix_data[0]['lastPrice'] if vix_data and len(vix_data) > 0 else 11
         
         return {
             "underlying": underlying,
@@ -98,7 +157,7 @@ def get_dhan_option_chain():
 def process_dhan_data(dhan_data):
     """Process Dhan API data into the format expected by the existing code"""
     if not dhan_data:
-        return None
+        return None, 11
     
     # Create mock records structure similar to NSE API
     records = []
@@ -109,105 +168,45 @@ def process_dhan_data(dhan_data):
     # Process option chain data
     for option in option_chain:
         strike = option['strikePrice']
-        expiry = option['expiryDate']
+        expiry = option['expiry']
         
-        if option['optionType'] == 'CE':
-            ce_data = {
-                'strikePrice': strike,
-                'expiryDate': expiry,
-                'openInterest': option['openInterest'],
-                'changeinOpenInterest': option['changeinOpenInterest'],
-                'totalTradedVolume': option['totalTradedVolume'],
-                'impliedVolatility': option['impliedVolatility'],
-                'lastPrice': option['lastPrice'],
-                'bidQty': option['bidQty'],
-                'askQty': option['askQty'],
-                'bidprice': option['bidprice'],
-                'askPrice': option['askPrice']
-            }
-            
-            # Find corresponding PE or create empty entry
-            pe_exists = False
-            for existing_record in records:
-                if existing_record['strikePrice'] == strike and existing_record.get('expiryDate') == expiry:
-                    existing_record['PE'] = {
-                        'strikePrice': strike,
-                        'expiryDate': expiry,
-                        'openInterest': 0,
-                        'changeinOpenInterest': 0,
-                        'totalTradedVolume': 0,
-                        'impliedVolatility': 0,
-                        'lastPrice': 0,
-                        'bidQty': 0,
-                        'askQty': 0,
-                        'bidprice': 0,
-                        'askPrice': 0
-                    }
-                    pe_exists = True
-                    break
-            
-            if not pe_exists:
-                records.append({
-                    'strikePrice': strike,
-                    'expiryDate': expiry,
-                    'CE': ce_data,
-                    'PE': {
-                        'strikePrice': strike,
-                        'expiryDate': expiry,
-                        'openInterest': 0,
-                        'changeinOpenInterest': 0,
-                        'totalTradedVolume': 0,
-                        'impliedVolatility': 0,
-                        'lastPrice': 0,
-                        'bidQty': 0,
-                        'askQty': 0,
-                        'bidprice': 0,
-                        'askPrice': 0
-                    }
-                })
+        # Create CE data
+        ce_data = {
+            'strikePrice': strike,
+            'expiryDate': expiry,
+            'openInterest': option.get('callOpenInterest', 0),
+            'changeinOpenInterest': option.get('callChangeinOpenInterest', 0),
+            'totalTradedVolume': option.get('callTotalTradedVolume', 0),
+            'impliedVolatility': option.get('callImpliedVolatility', 0),
+            'lastPrice': option.get('callLastPrice', 0),
+            'bidQty': option.get('callBidQty', 0),
+            'askQty': option.get('callAskQty', 0),
+            'bidprice': option.get('callBidPrice', 0),
+            'askPrice': option.get('callAskPrice', 0)
+        }
         
-        elif option['optionType'] == 'PE':
-            pe_data = {
-                'strikePrice': strike,
-                'expiryDate': expiry,
-                'openInterest': option['openInterest'],
-                'changeinOpenInterest': option['changeinOpenInterest'],
-                'totalTradedVolume': option['totalTradedVolume'],
-                'impliedVolatility': option['impliedVolatility'],
-                'lastPrice': option['lastPrice'],
-                'bidQty': option['bidQty'],
-                'askQty': option['askQty'],
-                'bidprice': option['bidprice'],
-                'askPrice': option['askPrice']
-            }
-            
-            # Find corresponding CE or create empty entry
-            ce_exists = False
-            for existing_record in records:
-                if existing_record['strikePrice'] == strike and existing_record.get('expiryDate') == expiry:
-                    existing_record['PE'] = pe_data
-                    ce_exists = True
-                    break
-            
-            if not ce_exists:
-                records.append({
-                    'strikePrice': strike,
-                    'expiryDate': expiry,
-                    'CE': {
-                        'strikePrice': strike,
-                        'expiryDate': expiry,
-                        'openInterest': 0,
-                        'changeinOpenInterest': 0,
-                        'totalTradedVolume': 0,
-                        'impliedVolatility': 0,
-                        'lastPrice': 0,
-                        'bidQty': 0,
-                        'askQty': 0,
-                        'bidprice': 0,
-                        'askPrice': 0
-                    },
-                    'PE': pe_data
-                })
+        # Create PE data
+        pe_data = {
+            'strikePrice': strike,
+            'expiryDate': expiry,
+            'openInterest': option.get('putOpenInterest', 0),
+            'changeinOpenInterest': option.get('putChangeinOpenInterest', 0),
+            'totalTradedVolume': option.get('putTotalTradedVolume', 0),
+            'impliedVolatility': option.get('putImpliedVolatility', 0),
+            'lastPrice': option.get('putLastPrice', 0),
+            'bidQty': option.get('putBidQty', 0),
+            'askQty': option.get('putAskQty', 0),
+            'bidprice': option.get('putBidPrice', 0),
+            'askPrice': option.get('putAskPrice', 0)
+        }
+        
+        # Add to records
+        records.append({
+            'strikePrice': strike,
+            'expiryDate': expiry,
+            'CE': ce_data,
+            'PE': pe_data
+        })
     
     # Get unique expiry dates
     expiry_dates = sorted(list(set([record['expiryDate'] for record in records if 'expiryDate' in record])))
@@ -518,7 +517,7 @@ def auto_update_call_log(current_price):
         elif call["Type"] == "PE":
             if current_price <= min(call["Targets"].values()):
                 call["Status"] = "Hit Target"
-                call["Hit_Target"] = True
+                call["Hit_Target】": True
                 call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
                 call["Exit_Price"] = current_price
             elif current_price >= call["Stoploss"]:
@@ -555,12 +554,19 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("23:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         # Check market hours
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
             return
+
+        # Display security ID detection status
+        with st.spinner("🔍 Detecting security IDs..."):
+            nifty_security_id = get_security_id("NIFTY")
+            vix_security_id = get_security_id("INDIAVIX")
+            
+            st.info(f"Detected Security IDs - NIFTY: {nifty_security_id}, INDIAVIX: {vix_security_id}")
 
         # Get data from Dhan API
         dhan_data = get_dhan_option_chain()
@@ -580,7 +586,7 @@ def analyze():
             return
 
         records = data['records']['data']
-        expiry = data['records']['expiryDates'][0]
+        expiry = data['records']['expiryDates'][0] if data['records']['expiryDates'] else datetime.now().strftime("%Y-%m-%d")
         underlying = data['records']['underlyingValue']
 
         # Display market info
