@@ -9,6 +9,7 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
+import json
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Options Analyzer", layout="wide")
@@ -133,8 +134,9 @@ weights = {
     "CE_Buildup": 1,
     "PE_Buildup": 1,
     "PCR_Signal": 1,
-    "VP_Score": 1,
-    "IV_Skew": 1
+    "VP_Bias": 1,
+    "IV_Skew_Bias": 1,
+    "OI_Bias": 1
 }
 
 def determine_level(row):
@@ -199,9 +201,9 @@ def expiry_bias_score(row):
         if row['bidQty_PE'] > row['bidQty_CE'] * 1.5:
             score -= 1
 
-    if row['totalTradedVolume_CE'] > 2 * row['openInterest_CE']:
+    if row['totalTeredVolume_CE'] > 2 * row['openInterest_CE']:
         score -= 0.5
-    if row['totalTradedVolume_PE'] > 2 * row['openInterest_PE']:
+    if row['totalTeredVolume_PE'] > 2 * row['openInterest_PE']:
         score += 0.5
 
     if 'underlyingValue' in row:
@@ -450,6 +452,14 @@ def color_iv_skew(val):
         return 'background-color: #90EE90; color: black'
     else:
         return 'background-color: #FFFFE0; color: black'
+                
+def color_oi_bias(val):
+    if val > 0.6:  # High call OI (bearish)
+        return 'background-color: #FFB6C1; color: black'
+    elif val < 0.4:  # High put OI (bullish)
+        return 'background-color: #90EE90; color: black'
+    else:
+        return 'background-color: #FFFFE0; color: black'
 
 def calculate_long_short_buildup(price_change, oi_change):
     """Calculate Long/Short Build-up based on price and OI changes"""
@@ -472,7 +482,7 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("17:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
@@ -481,10 +491,40 @@ def analyze():
         headers = {"User-Agent": "Mozilla/5.0"}
         session = requests.Session()
         session.headers.update(headers)
-        session.get("https://www.nseindia.com", timeout=5)
-        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={index_symbol}"
-        response = session.get(url, timeout=10)
-        data = response.json()
+        
+        # Fix for JSON error - better error handling and retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                session.get("https://www.nseindia.com", timeout=5)
+                url = f"https://www.nseindia.com/api/option-chain-indices?symbol={index_symbol}"
+                response = session.get(url, timeout=10)
+                
+                # Check if response is valid
+                if response.status_code != 200:
+                    st.error(f"❌ API Error: Status code {response.status_code}")
+                    continue
+                    
+                # Check if response content is not empty
+                if not response.content:
+                    st.error("❌ Empty response from API")
+                    continue
+                    
+                data = response.json()
+                break  # Success, break out of retry loop
+                
+            except json.JSONDecodeError as e:
+                st.error(f"❌ JSON Decode Error (Attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    st.error("❌ Failed to fetch data after multiple attempts. Please try again later.")
+                    return
+                continue
+            except Exception as e:
+                st.error(f"❌ Network Error (Attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    st.error("❌ Failed to fetch data after multiple attempts. Please try again later.")
+                    return
+                continue
 
         records = data['records']['data']
         expiry = data['records']['expiryDates'][0]
@@ -533,9 +573,21 @@ def analyze():
             
             st.markdown(f"### 📍 Spot Price: {underlying}")
             
-            prev_close_url = f"https://www.nseindia.com/api/equity-stockIndices?index={index_symbol.replace('NIFTY', 'NIFTY 50') if index_symbol == 'NIFTY' else index_symbol}"
-            prev_close_data = session.get(prev_close_url, timeout=10).json()
-            prev_close = prev_close_data['data'][0]['previousClose']
+            # Fix for previous close data fetch
+            try:
+                index_map = {
+                    "NIFTY": "NIFTY 50",
+                    "BANKNIFTY": "NIFTY BANK",
+                    "NIFTYNEXT50": "NIFTY NEXT 50",
+                    "FINNIFTY": "NIFTY FINANCIAL SERVICES",
+                    "MIDCPNIFTY": "NIFTY MIDCAP SELECT"
+                }
+                prev_close_url = f"https://www.nseindia.com/api/equity-stockIndices?index={index_map.get(index_symbol, index_symbol)}"
+                prev_close_response = session.get(prev_close_url, timeout=10)
+                prev_close_data = prev_close_response.json()
+                prev_close = prev_close_data['data'][0]['previousClose']
+            except:
+                prev_close = underlying * 0.99  # Fallback if previous close not available
             
             calls, puts = [], []
             for item in records:
@@ -666,7 +718,6 @@ def analyze():
         df = df[df['strikePrice'].between(min_strike, max_strike)]
         
         # === VOLUME PROFILE AND IV SKEW FOR NON-EXPIRY DAYS ===
-        # Calculate these first before creating the summary
         df['Total_Volume'] = df['totalTradedVolume_CE'] + df['totalTradedVolume_PE']
         df['VP_Score'] = np.where(
             df['Total_Volume'] > 0,
@@ -674,6 +725,13 @@ def analyze():
             0
         )
         df['IV_Skew'] = df['impliedVolatility_PE'] - df['impliedVolatility_CE']
+        
+        # === OI BIAS CALCULATION ===
+        df['OI_Ratio'] = df['openInterest_CE'] / (df['openInterest_CE'] + df['openInterest_PE'])
+        df['OI_Bias'] = np.where(
+            df['OI_Ratio'] > 0.6, "Bearish",
+            np.where(df['OI_Ratio'] < 0.4, "Bullish", "Neutral")
+        )
         
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
@@ -693,14 +751,6 @@ def analyze():
             ce_buildup = calculate_long_short_buildup(ce_price_change, row['changeinOpenInterest_CE'])
             pe_buildup = calculate_long_short_buildup(pe_price_change, row['changeinOpenInterest_PE'])
             
-            # Get VP_Score and IV_Skew from the row (already calculated above)
-            vp_score = row['VP_Score']
-            iv_skew = row['IV_Skew']
-            
-            # Calculate VP and IV Skew biases
-            vp_bias = "Bullish" if vp_score > 0.2 else "Bearish" if vp_score < -0.2 else "Neutral"
-            iv_skew_bias = "Bullish" if iv_skew < -2 else "Bearish" if iv_skew > 2 else "Neutral"
-            
             score = 0
             row_data = {
                 "Strike": row['strikePrice'],
@@ -713,17 +763,14 @@ def analyze():
                     row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
                     row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
                 ),
-                # Add bid/ask pressure to the row data
                 "BidAskPressure": bid_ask_pressure,
                 "PressureBias": pressure_bias,
-                # Add Long/Short Build-up columns
                 "CE_Buildup": ce_buildup,
                 "PE_Buildup": pe_buildup,
-                # Add Volume Profile and IV Skew with their biases
-                "VP_Score": vp_score,
-                "VP_Bias": vp_bias,
-                "IV_Skew": iv_skew,
-                "IV_Skew_Bias": iv_skew_bias
+                "VP_Score": row['VP_Score'],
+                "IV_Skew": row['IV_Skew'],
+                "OI_Ratio": row['OI_Ratio'],
+                "OI_Bias": row['OI_Bias']
             }
 
             # Calculate PCR Signal (will be added later in the merge)
@@ -738,8 +785,9 @@ def analyze():
                 "CE_Buildup": row_data["CE_Buildup"],
                 "PE_Buildup": row_data["PE_Buildup"],
                 "PCR_Signal": pcr_signal,
-                "VP_Score": vp_bias,
-                "IV_Skew": iv_skew_bias
+                "VP_Bias": "Bullish" if row_data["VP_Score"] > 0.2 else "Bearish" if row_data["VP_Score"] < -0.2 else "Neutral",
+                "IV_Skew_Bias": "Bullish" if row_data["IV_Skew"] < -2 else "Bearish" if row_data["IV_Skew"] > 2 else "Neutral",
+                "OI_Bias": row_data["OI_Bias"]
             }
             
             for factor, value in score_factors.items():
@@ -771,7 +819,8 @@ def analyze():
         df_summary = pd.merge(
             df_summary,
             df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
-                'changeinOpenInterest_CE', 'changeinOpenInterest_PE']],
+                'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
+                'VP_Score', 'IV_Skew', 'OI_Ratio', 'OI_Bias']],
             left_on='Strike',
             right_on='strikePrice',
             how='left'
@@ -809,22 +858,12 @@ def analyze():
             # Update verdict after PCR adjustment
             df_summary.at[idx, 'Verdict'] = final_verdict(df_summary.at[idx, 'BiasScore'])
 
-        # Add styling for the new bias columns
-        def color_bias(val):
-            if val == "Bullish":
-                return 'background-color: #90EE90; color: black'  # Light green for bullish
-            elif val == "Bearish":
-                return 'background-color: #FFB6C1; color: black'  # Light red for bearish
-            else:
-                return 'background-color: #FFFFE0; color: black'   # Light yellow for neutral
-
         styled_df = (df_summary.style
                     .applymap(color_pcr, subset=['PCR'])
                     .applymap(color_pressure, subset=['BidAskPressure'])
                     .applymap(color_vp, subset=['VP_Score'])
                     .applymap(color_iv_skew, subset=['IV_Skew'])
-                    .applymap(color_bias, subset=['VP_Bias', 'IV_Skew_Bias', 'ChgOI_Bias', 'AskQty_Bias', 
-                                                'DVP_Bias', 'PressureBias', 'PCR_Signal']))
+                    .applymap(color_oi_bias, subset=['OI_Ratio']))
         
         df_summary = df_summary.drop(columns=['strikePrice'])
         
@@ -840,6 +879,7 @@ def analyze():
 
         atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
+        atm_oi_bias = atm_row['OI_Bias'] if atm_row is not None else None
         support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
 
         st.session_state.support_zone = support_zone
@@ -865,9 +905,11 @@ def analyze():
 
                 atm_chgoi_bias = atm_row['ChgOI_Bias'] if atm_row is not None else None
                 atm_askqty_bias = atm_row['AskQty_Bias'] if atm_row is not None else None
+                atm_oi_bias = atm_row['OI_Bias'] if atm_row is not None else None
                 pcr_signal = df_summary[df_summary['Strike'] == row['Strike']]['PCR_Signal'].values[0]
-                vp_score = row['VP_Score']  # Now directly accessible from the row
-                iv_skew = row['IV_Skew']   # Now directly accessible from the row
+                vp_score = df_summary[df_summary['Strike'] == row['Strike']]['VP_Score'].values[0]
+                iv_skew = df_summary[df_summary['Strike'] == row['Strike']]['IV_Skew'].values[0]
+                oi_bias = df_summary[df_summary['Strike'] == row['Strike']]['OI_Bias'].values[0]
 
                 if st.session_state.use_pcr_filter:
                     # Support + Bullish conditions with PCR confirmation
@@ -875,6 +917,7 @@ def analyze():
                         and "Bullish" in market_view
                         and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
                         and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
+                        and (atm_oi_bias == "Bullish" or atm_oi_bias is None)
                         and pcr_signal == "Bullish"
                         and vp_score > 0  # Volume profile bullish
                         and iv_skew < 0):  # IV skew bullish
@@ -884,6 +927,7 @@ def analyze():
                           and "Bearish" in market_view
                           and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                           and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
+                          and (atm_oi_bias == "Bearish" or atm_oi_bias is None)
                           and pcr_signal == "Bearish"
                           and vp_score < 0  # Volume profile bearish
                           and iv_skew > 0):  # IV skew bearish
@@ -896,6 +940,7 @@ def analyze():
                         and "Bullish" in market_view
                         and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
                         and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
+                        and (atm_oi_bias == "Bullish" or atm_oi_bias is None)
                         and vp_score > 0  # Volume profile bullish
                         and iv_skew < 0):  # IV skew bullish
                         option_type = 'CE'
@@ -903,8 +948,9 @@ def analyze():
                           and "Bearish" in market_view
                           and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                           and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
-                          and vp_score < 0  # Volume profile bearish
-                          and iv_skew > 0):  # IV skew bearish
+                          and (atm_oi_bias == "Bearish" or atm_oi_bias is None)
+                        and vp_score < 0  # Volume profile bearish
+                        and iv_skew > 0):  # IV skew bearish
                         option_type = 'PE'
                     else:
                         continue
@@ -926,6 +972,7 @@ def analyze():
                     f"PCR: {df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0]} ({pcr_signal})\n"
                     f"VP Score: {vp_score:.2f}\n"
                     f"IV Skew: {iv_skew:.2f}\n"
+                    f"OI Bias: {oi_bias}\n"
                     f"Bias Score: {total_score} ({market_view})\n"
                     f"Level: {row['Level']}\n"
                     f"📉 Support Zone: {support_str}\n"
@@ -944,7 +991,8 @@ def analyze():
                     "PCR": df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0],
                     "PCR_Signal": pcr_signal,
                     "VP_Score": vp_score,
-                    "IV_Skew": iv_skew
+                    "IV_Skew": iv_skew,
+                    "OI_Bias": oi_bias
                 })
 
                 signal_sent = True
@@ -975,6 +1023,11 @@ def analyze():
             ℹ️ IV Skew:
             - Positive = PE IV > CE IV (Bearish)
             - Negative = PE IV < CE IV (Bullish)
+            
+            ℹ️ OI Bias (Call vs Put Open Interest):
+            - <0.4 = More Put OI (Bullish)
+            - >0.6 = More Call OI (Bearish)
+            - 0.4-0.6 = Balanced (Neutral)
             """)
             st.dataframe(styled_df)
         
