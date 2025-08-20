@@ -179,13 +179,14 @@ def get_support_resistance_zones(df, spot):
 def expiry_bias_score(row):
     score = 0
 
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] > row['previousClose_CE']:
+    # Use lastPrice instead of pchange which is no longer available
+    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] > 0:
         score += 1
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] > row['previousClose_PE']:
+    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] > 0:
         score -= 1
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] < row['previousClose_CE']:
+    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] < 0:
         score -= 1
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] < row['previousClose_PE']:
+    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] < 0:
         score += 1
         
     if 'bidQty_CE' in row and 'bidQty_PE' in row:
@@ -353,7 +354,7 @@ def plot_price_with_sr():
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=resistance_zone[0], y1=resistance_zone[1],
-            fillcolor="rgba(255,0,0,0.08)", line=dict(width=0),
+            fillcolor="rg0,0,255,0.08)", line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
@@ -764,7 +765,6 @@ def analyze():
                     'changeinOpenInterest_CE': item['CE']['changeinOpenInterest'],
                     'totalTradedVolume_CE': item['CE']['totalTradedVolume'],
                     'lastPrice_CE': item['CE']['lastPrice'],
-                    'previousClose_CE': item['CE']['pchange'],
                     'impliedVolatility_CE': item['CE']['impliedVolatility'],
                     'bidQty_CE': item['CE']['bidQty'],
                     'askQty_CE': item['CE']['askQty'],
@@ -772,7 +772,6 @@ def analyze():
                     'changeinOpenInterest_PE': item['PE']['changeinOpenInterest'],
                     'totalTradedVolume_PE': item['PE']['totalTradedVolume'],
                     'lastPrice_PE': item['PE']['lastPrice'],
-                    'previousClose_PE': item['PE']['pchange'],
                     'impliedVolatility_PE': item['PE']['impliedVolatility'],
                     'bidQty_PE': item['PE']['bidQty'],
                     'askQty_PE': item['PE']['askQty'],
@@ -798,7 +797,7 @@ def analyze():
         # Calculate Delta-Volume bias
         df['DVP_CE'] = df.apply(
             lambda x: delta_volume_bias(
-                x['lastPrice_CE'] - x['previousClose_CE'],
+                x['lastPrice_CE'],
                 x['totalTradedVolume_CE'],
                 x['changeinOpenInterest_CE']
             ), axis=1
@@ -806,7 +805,7 @@ def analyze():
         
         df['DVP_PE'] = df.apply(
             lambda x: delta_volume_bias(
-                x['lastPrice_PE'] - x['previousClose_PE'],
+                x['lastPrice_PE'],
                 x['totalTradedVolume_PE'],
                 x['changeinOpenInterest_PE']
             ), axis=1
@@ -815,14 +814,14 @@ def analyze():
         # Calculate Long/Short buildup
         df['Buildup_CE'] = df.apply(
             lambda x: calculate_long_short_buildup(
-                x['lastPrice_CE'] - x['previousClose_CE'],
+                x['lastPrice_CE'],
                 x['changeinOpenInterest_CE']
             ), axis=1
         )
         
         df['Buildup_PE'] = df.apply(
             lambda x: calculate_long_short_buildup(
-                x['lastPrice_PE'] - x['previousClose_PE'],
+                x['lastPrice_PE'],
                 x['changeinOpenInterest_PE']
             ), axis=1
         )
@@ -936,7 +935,7 @@ def analyze():
         
         # Apply styling
         styled_df = near_strikes_display.style.applymap(
-            color_pcr, subset['PCR']
+            color_pcr, subset=['PCR']
         ).applymap(
             color_pressure, subset=['CE Volume', 'PE Volume']
         )
