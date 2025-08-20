@@ -1023,15 +1023,18 @@ def analyze():
         if suggested_trade:
             st.info(f"🔹 {atm_signal}\n{suggested_trade}")
         
-        # Option Chain Summary
-with st.expander("📊 Option Chain Summary"):
-    st.info(f"""
-    ℹ️ PCR Interpretation (VIX: {vix_value}):
-    - >{st.session_state.pcr_threshold_bull} = Bullish
-    - <{st.session_state.pcr_threshold_bear} = Bearish
-    - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
-    """)
-    st.dataframe(styled_df)
+       # Option Chain Summary
+try:
+    with st.expander("📊 Option Chain Summary"):
+        st.info(f"""
+        ℹ️ PCR Interpretation (VIX: {vix_value}):
+        - >{st.session_state.pcr_threshold_bull} = Bullish
+        - <{st.session_state.pcr_threshold_bear} = Bearish
+        - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
+        """)
+        st.dataframe(styled_df)
+except Exception as e:
+    st.error(f"Error displaying option chain: {e}")
         
         # Trade Log
         if st.session_state.trade_log:
