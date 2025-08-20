@@ -323,7 +323,6 @@ def plot_price_with_sr():
         name='Spot Price',
         line=dict(color='blue', width=2)
     )
-    
     if all(support_zone) and None not in support_zone:
         fig.add_shape(
             type="rect",
