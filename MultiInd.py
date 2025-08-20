@@ -141,9 +141,12 @@ def determine_level(row):
     ce_chg = row['changeinOpenInterest_CE']
     pe_chg = row['changeinOpenInterest_PE']
 
-    if pe_oi > 1.12 * ce_oi:
+    ce_strength = ce_oi + ce_chg
+    pe_strength = pe_oi + pe_chg
+
+    if pe_strength > 1.12 * ce_strength:
         return "Support"
-    elif ce_oi > 1.12 * pe_oi:
+    elif ce_strength > 1.12 * pe_strength:
         return "Resistance"
     else:
         return "Neutral"
