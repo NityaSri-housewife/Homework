@@ -10,6 +10,7 @@ from pytz import timezone
 import plotly.graph_objects as go
 import io
 import json
+import csv
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -30,6 +31,8 @@ if 'resistance_zone' not in st.session_state:
     st.session_state.resistance_zone = (None, None)
 if 'security_ids' not in st.session_state:
     st.session_state.security_ids = {}
+if 'dhan_instruments' not in st.session_state:
+    st.session_state.dhan_instruments = {}
 
 # Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
@@ -61,6 +64,67 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
 
+def get_dhan_quote(symbol=None, secId=None, exchangeSegment="NSE_INDEX"):
+    """Get quote data from Dhan API - handles both Index/Stock and Option/Future instruments"""
+    headers = {
+        "access-token": DHAN_ACCESS_TOKEN
+    }
+    
+    try:
+        if secId:
+            # For derivatives (Options/Futures) - use secId endpoint
+            url = f"{DHAN_BASE_URL}/quotes?secId={secId}&exchange={exchangeSegment}"
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        else:
+            # For Index/Stock - use intraday endpoint
+            url = f"{DHAN_BASE_URL}/quotes/intraday"
+            params = {
+                "symbol": symbol,
+                "exchangeSegment": exchangeSegment
+            }
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        st.error(f"❌ Dhan API error: {e}")
+        return None
+
+def load_dhan_instruments():
+    """Load Dhan instruments from CSV file if available"""
+    try:
+        # Try to load from CSV file
+        instruments = {}
+        with open('dhan-instruments.csv', 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                symbol = row.get('symbol', '').upper()
+                security_id = row.get('securityId', '')
+                exchange = row.get('exchange', 'NSE')
+                if symbol and security_id:
+                    instruments[symbol] = {
+                        'securityId': security_id,
+                        'exchange': exchange
+                    }
+        st.session_state.dhan_instruments = instruments
+        return instruments
+    except FileNotFoundError:
+        st.warning("⚠️ dhan-instruments.csv not found. Using default security IDs.")
+        # Return default instruments
+        default_instruments = {
+            "NIFTY": {"securityId": "999920000", "exchange": "NSE"},
+            "BANKNIFTY": {"securityId": "999920005", "exchange": "NSE"},
+            "INDIAVIX": {"securityId": "999920013", "exchange": "NSE"},
+            "NIFTY50": {"securityId": "999920000", "exchange": "NSE"},
+            "NIFTY 50": {"securityId": "999920000", "exchange": "NSE"}
+        }
+        st.session_state.dhan_instruments = default_instruments
+        return default_instruments
+    except Exception as e:
+        st.error(f"❌ Error loading instruments: {e}")
+        return {}
+
 def get_security_id(symbol_name, instrument_type="INDEX"):
     """Automatically find security ID for a given symbol"""
     headers = {
@@ -70,6 +134,12 @@ def get_security_id(symbol_name, instrument_type="INDEX"):
     # Check if we already have this security ID cached
     if symbol_name in st.session_state.security_ids:
         return st.session_state.security_ids[symbol_name]
+    
+    # Check if we have it in the instruments CSV
+    if symbol_name.upper() in st.session_state.dhan_instruments:
+        security_id = st.session_state.dhan_instruments[symbol_name.upper()]['securityId']
+        st.session_state.security_ids[symbol_name] = security_id
+        return security_id
     
     try:
         # Try to search for the security
@@ -104,44 +174,51 @@ def get_security_id(symbol_name, instrument_type="INDEX"):
             st.session_state.security_ids[symbol_name] = security_id
             return security_id
             
-        # If all else fails, return a default value
-        st.warning(f"⚠️ Could not find security ID for {symbol_name}, using default")
-        return "999920000"
+        # If all else fails, return None (will use symbol-based approach)
+        st.warning(f"⚠️ Could not find security ID for {symbol_name}, using symbol-based approach")
+        return None
         
     except Exception as e:
         st.error(f"❌ Error finding security ID for {symbol_name}: {e}")
-        # Return a default value
-        return "999920000"
+        # Return None to use symbol-based approach
+        return None
 
 def get_dhan_option_chain():
     """Fetch option chain data from Dhan API with automatic security ID detection"""
-    headers = {
-        "access-token": DHAN_ACCESS_TOKEN
-    }
+    # Load instruments first
+    if not st.session_state.dhan_instruments:
+        load_dhan_instruments()
     
     try:
-        # Get security IDs
+        # Get security IDs or use symbol-based approach
         nifty_security_id = get_security_id("NIFTY")
         vix_security_id = get_security_id("INDIAVIX")
         
         # Get Nifty spot price
-        spot_url = f"{DHAN_BASE_URL}/quotes?secId={nifty_security_id}&exchange=NSE"
-        spot_response = requests.get(spot_url, headers=headers, timeout=10)
-        spot_response.raise_for_status()
-        spot_data = spot_response.json()
-        underlying = spot_data[0]['lastPrice'] if spot_data and len(spot_data) > 0 else 0
+        if nifty_security_id:
+            # Use secId approach for derivatives
+            nifty_data = get_dhan_quote(secId=nifty_security_id, exchangeSegment="NSE")
+        else:
+            # Use symbol approach for indices
+            nifty_data = get_dhan_quote(symbol="NIFTY", exchangeSegment="NSE_INDEX")
         
-        # Get option chain data
-        option_chain_url = f"{DHAN_BASE_URL}/options/chains?secId={nifty_security_id}&exchange=NSE"
+        underlying = nifty_data[0]['lastPrice'] if nifty_data and len(nifty_data) > 0 else 0
+        
+        # Get option chain data - always use secId for options
+        option_chain_url = f"{DHAN_BASE_URL}/options/chains?secId={nifty_security_id or '999920000'}&exchange=NSE"
+        headers = {"access-token": DHAN_ACCESS_TOKEN}
         option_response = requests.get(option_chain_url, headers=headers, timeout=10)
         option_response.raise_for_status()
         option_data = option_response.json()
         
         # Get VIX data
-        vix_url = f"{DHAN_BASE_URL}/quotes?secId={vix_security_id}&exchange=NSE"
-        vix_response = requests.get(vix_url, headers=headers, timeout=10)
-        vix_response.raise_for_status()
-        vix_data = vix_response.json()
+        if vix_security_id:
+            # Use secId approach
+            vix_data = get_dhan_quote(secId=vix_security_id, exchangeSegment="NSE")
+        else:
+            # Use symbol approach
+            vix_data = get_dhan_quote(symbol="INDIAVIX", exchangeSegment="NSE_INDEX")
+        
         vix_value = vix_data[0]['lastPrice'] if vix_data and len(vix_data) > 0 else 11
         
         return {
@@ -446,7 +523,7 @@ def plot_price_with_sr():
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=support_zone[0], y1=support_zone[1],
-                        fillcolor="rgba(0,255,0,0.08)", line=dict(width=0),
+            fillcolor="rgba(0,255,0,0.08)", line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
@@ -484,7 +561,7 @@ def plot_price_with_sr():
             x=[price_df['Time'].min(), price_df['Time'].max()],
             y=[resistance_zone[1], resistance_zone[1]],
             mode='lines',
-            name='Resistance High',
+            name='Resistance High",
             line=dict(color='red', dash='dot')
         ))
     
@@ -554,7 +631,7 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("23:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         # Check market hours
         if current_day >= 5 or not (market_start <= current_time <= market_end):
@@ -566,7 +643,7 @@ def analyze():
             nifty_security_id = get_security_id("NIFTY")
             vix_security_id = get_security_id("INDIAVIX")
             
-            st.info(f"Detected Security IDs - NIFTY: {nifty_security_id}, INDIAVIX: {vix_security_id}")
+            st.info(f"Detected Security IDs - NIFTY: {nifty_security_id or 'Using Symbol'}, INDIAVIX: {vix_security_id or 'Using Symbol'}")
 
         # Get data from Dhan API
         dhan_data = get_dhan_option_chain()
@@ -948,7 +1025,7 @@ def analyze():
         
         # Option Chain Summary
         with st.expander("📊 Option Chain Summary"):
-            st.info(f"""
+                        st.info(f"""
             ℹ️ PCR Interpretation (VIX: {vix_value}):
             - >{st.session_state.pcr_threshold_bull} = Bullish
             - <{st.session_state.pcr_threshold_bear} = Bearish
@@ -1025,4 +1102,6 @@ def analyze():
 
 # === Main Function Call ===
 if __name__ == "__main__":
+    # Load Dhan instruments first
+    load_dhan_instruments()
     analyze()
