@@ -7,6 +7,7 @@ from scipy.stats import norm
 from ta.momentum import RSIIndicator
 import io
 import time
+import pytz
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Signal", layout="wide")
@@ -21,6 +22,23 @@ TELEGRAM_CHAT_ID = "5704496584"
 # Track if Telegram message has been sent in this session
 if 'telegram_sent' not in st.session_state:
     st.session_state.telegram_sent = False
+if 'last_analysis_time' not in st.session_state:
+    st.session_state.last_analysis_time = 0
+
+def is_market_hours():
+    """Check if current time is during Indian market hours (Mon-Fri, 9:00 AM to 3:30 PM IST)"""
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Check if it's a weekday (Monday to Friday)
+    if now.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+    
+    # Check if it's within market hours
+    market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    
+    return market_start <= now <= market_end
 
 def send_telegram_message(message):
     try:
@@ -198,33 +216,35 @@ def apply_scoring(df, fii_trend, mood):
 # === Main Streamlit Run ===
 st.title("📈 Nifty Options Analyzer")
 
-# Initialize session state for auto-refresh
-if 'last_refresh' not in st.session_state:
-    st.session_state.last_refresh = time.time()
-if 'auto_refresh' not in st.session_state:
-    st.session_state.auto_refresh = False
+# Check if we should run analysis (market hours and 2 min interval)
+current_time = time.time()
+should_run_analysis = (
+    is_market_hours() and 
+    (current_time - st.session_state.last_analysis_time >= AUTO_REFRESH_INTERVAL)
+)
 
-# Auto-refresh toggle
-auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=st.session_state.auto_refresh)
+# Display market status
+ist = pytz.timezone('Asia/Kolkata')
+now_ist = datetime.now(ist)
+st.sidebar.subheader("Market Status")
+st.sidebar.write(f"Current Time (IST): {now_ist.strftime('%Y-%m-%d %H:%M:%S')}")
 
-if auto_refresh:
-    st.session_state.auto_refresh = True
-    # Check if it's time to refresh
-    current_time = time.time()
-    if current_time - st.session_state.last_refresh >= AUTO_REFRESH_INTERVAL:
-        st.session_state.last_refresh = current_time
-        st.session_state.telegram_sent = False  # Reset telegram sent flag on refresh
-        st.rerun()
+if is_market_hours():
+    next_refresh = AUTO_REFRESH_INTERVAL - (current_time - st.session_state.last_analysis_time)
+    if next_refresh < 0:
+        next_refresh = 0
+    st.sidebar.success("✅ Market is OPEN")
+    st.sidebar.write(f"Next analysis in: {int(next_refresh)} seconds")
 else:
-    st.session_state.auto_refresh = False
+    st.sidebar.warning("⏸️ Market is CLOSED")
+    st.sidebar.write("Analysis will auto-run during market hours")
+    st.sidebar.write("(Mon-Fri, 9:00 AM - 3:30 PM IST)")
 
-# Display refresh status
-if st.session_state.auto_refresh:
-    next_refresh = AUTO_REFRESH_INTERVAL - (time.time() - st.session_state.last_refresh)
-    st.sidebar.write(f"Next refresh in: {int(next_refresh)} seconds")
-
-# Manual refresh button
-if st.button("Run Analysis") or st.session_state.auto_refresh:
+# Run analysis if it's time
+if should_run_analysis:
+    st.session_state.last_analysis_time = current_time
+    st.session_state.telegram_sent = False  # Reset telegram sent flag
+    
     with st.spinner("Analyzing options data..."):
         fii_trend = fetch_fii_trend()
         mood = detect_market_mood_from_nse()
@@ -276,4 +296,14 @@ if st.button("Run Analysis") or st.session_state.auto_refresh:
             st.info("Analysis completed. No high-score options found for Telegram alert.")
         
         # Show when the data was last refreshed
-        st.caption(f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.caption(f"Last analysis: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+# Set up auto-refresh
+if is_market_hours():
+    refresh_seconds = max(1, AUTO_REFRESH_INTERVAL - (time.time() - st.session_state.last_analysis_time))
+    time.sleep(refresh_seconds)
+    st.rerun()
+else:
+    # If market is closed, check again in 5 minutes
+    time.sleep(300)
+    st.rerun()
