@@ -6,21 +6,36 @@ from datetime import datetime, timedelta
 from scipy.stats import norm
 from ta.momentum import RSIIndicator
 import io
+import time
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Signal", layout="wide")
+
+# === Auto-refresh Configuration ===
+AUTO_REFRESH_INTERVAL = 120  # 2 minutes in seconds
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
 
+# Track if Telegram message has been sent in this session
+if 'telegram_sent' not in st.session_state:
+    st.session_state.telegram_sent = False
+
 def send_telegram_message(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        requests.post(url, data=payload)
+        response = requests.post(url, data=payload)
+        if response.status_code == 200:
+            st.session_state.telegram_sent = True
+            return True
+        else:
+            st.error(f"Telegram API Error: {response.status_code}")
+            return False
     except Exception as e:
         st.error(f"Telegram Error: {e}")
+        return False
 
 # === Greeks Calculator ===
 def calculate_greeks(option_type, S, K, T, r, sigma):
@@ -183,10 +198,37 @@ def apply_scoring(df, fii_trend, mood):
 # === Main Streamlit Run ===
 st.title("📈 Nifty Options Analyzer")
 
-if st.button("Run Analysis"):
-    fii_trend = fetch_fii_trend()
-    mood = detect_market_mood_from_nse()
-    df, spot = fetch_option_chain()
+# Initialize session state for auto-refresh
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = time.time()
+if 'auto_refresh' not in st.session_state:
+    st.session_state.auto_refresh = False
+
+# Auto-refresh toggle
+auto_refresh = st.sidebar.checkbox("Auto Refresh (2 min)", value=st.session_state.auto_refresh)
+
+if auto_refresh:
+    st.session_state.auto_refresh = True
+    # Check if it's time to refresh
+    current_time = time.time()
+    if current_time - st.session_state.last_refresh >= AUTO_REFRESH_INTERVAL:
+        st.session_state.last_refresh = current_time
+        st.session_state.telegram_sent = False  # Reset telegram sent flag on refresh
+        st.rerun()
+else:
+    st.session_state.auto_refresh = False
+
+# Display refresh status
+if st.session_state.auto_refresh:
+    next_refresh = AUTO_REFRESH_INTERVAL - (time.time() - st.session_state.last_refresh)
+    st.sidebar.write(f"Next refresh in: {int(next_refresh)} seconds")
+
+# Manual refresh button
+if st.button("Run Analysis") or st.session_state.auto_refresh:
+    with st.spinner("Analyzing options data..."):
+        fii_trend = fetch_fii_trend()
+        mood = detect_market_mood_from_nse()
+        df, spot = fetch_option_chain()
 
     if df.empty:
         st.error("⚠️ Failed to fetch option chain")
@@ -206,20 +248,32 @@ if st.button("Run Analysis"):
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # === Telegram Alert (only if score > 5.56) ===
-        msg = f"<b>📈 NIFTY OPTIONS SIGNAL</b>\n<b>Spot:</b> {spot}\n<b>FII:</b> {fii_trend} | <b>Mood:</b> {mood}\n\n"
-
-        filtered_df = scored_df[scored_df["Score"] > 5.56]
-
-        if not filtered_df.empty:
-            for _, row in filtered_df.groupby("Type").head(3).iterrows():
-                msg += (
-                    f"<b>{row['Type']} {int(row['Strike'])}</b> | Score: {row['Score']}\n"
-                    f"LTP: {row['LTP']} | Entry: {row['Entry']}\n"
-                    f"SL: {row['SL']} | TGT: {row['Target']}\n"
-                    f"Strengths: {row['Strengths']}\n\n"
-                )
-            send_telegram_message(msg)
-            st.success("✅ Analysis completed. High-score signals sent to Telegram.")
+        # === Telegram Alert - Only send for high-score options and if not already sent ===
+        high_score_threshold = 7.0  # Minimum score to send Telegram alert
+        
+        # Filter high-score options
+        high_score_options = scored_df[scored_df['Score'] >= high_score_threshold]
+        
+        if not high_score_options.empty and not st.session_state.telegram_sent:
+            msg = f"<b>📈 NIFTY OPTIONS SIGNAL</b>\n<b>Spot:</b> {spot}\n<b>FII:</b> {fii_trend} | <b>Mood:</b> {mood}\n\n"
+            
+            # Add top 3 options for each type
+            for option_type in ["CE", "PE"]:
+                type_options = high_score_options[high_score_options['Type'] == option_type].head(3)
+                if not type_options.empty:
+                    msg += f"<b>Top {option_type} Options:</b>\n"
+                    for _, row in type_options.iterrows():
+                        msg += f"<b>{row['Type']} {int(row['Strike'])}</b> | Score: {row['Score']}\nLTP: {row['LTP']} | Entry: {row['Entry']}\nSL: {row['SL']} | TGT: {row['Target']}\nStrengths: {row['Strengths']}\n\n"
+            
+            # Send Telegram message
+            if send_telegram_message(msg):
+                st.success("✅ Analysis completed. Signal sent to Telegram.")
+            else:
+                st.warning("Analysis completed but Telegram message failed to send.")
+        elif st.session_state.telegram_sent:
+            st.info("Analysis completed. Telegram message already sent in this session.")
         else:
-            st.info("ℹ️ No signals above score 5.56. Nothing sent to Telegram.")
+            st.info("Analysis completed. No high-score options found for Telegram alert.")
+        
+        # Show when the data was last refreshed
+        st.caption(f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
