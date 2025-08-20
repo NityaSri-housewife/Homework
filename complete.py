@@ -378,7 +378,7 @@ def plot_price_with_sr():
         template="plotly_white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    st.plotly_chart(ffig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 def auto_update_call_log(current_price):
     for call in st.session_state.call_log_book:
@@ -823,7 +823,7 @@ def analyze():
         df['Buildup_PE'] = df.apply(
             lambda x: calculate_long_short_buildup(
                 x['lastPrice_PE'] - x['previousClose_PE'],
-                x['changeinOpenInterest_PE'
+                x['changeinOpenInterest_PE']
             ), axis=1
         )
         
@@ -936,7 +936,7 @@ def analyze():
         
         # Apply styling
         styled_df = near_strikes_display.style.applymap(
-            color_pcr, subset=['PCR']
+            color_pcr, subset['PCR']
         ).applymap(
             color_pressure, subset=['CE Volume', 'PE Volume']
         )
