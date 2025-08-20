@@ -446,7 +446,7 @@ def plot_price_with_sr():
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=support_zone[0], y1=support_zone[1],
-            fillcolor="rgba(0,255,0,0.08)", line=dict(width=0),
+                        fillcolor="rgba(0,255,0,0.08)", line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
@@ -517,7 +517,7 @@ def auto_update_call_log(current_price):
         elif call["Type"] == "PE":
             if current_price <= min(call["Targets"].values()):
                 call["Status"] = "Hit Target"
-                call["Hit_Target】": True
+                call["Hit_Target"] = True
                 call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
                 call["Exit_Price"] = current_price
             elif current_price >= call["Stoploss"]:
