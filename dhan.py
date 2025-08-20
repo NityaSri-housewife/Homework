@@ -561,7 +561,7 @@ def plot_price_with_sr():
             x=[price_df['Time'].min(), price_df['Time'].max()],
             y=[resistance_zone[1], resistance_zone[1]],
             mode='lines',
-            name='Resistance High",
+            name='Resistance High',
             line=dict(color='red', dash='dot')
         ))
     
