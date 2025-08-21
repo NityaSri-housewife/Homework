@@ -368,7 +368,7 @@ def color_pnl(row):
         return colors
     
 styled_trades = df_trades.style.apply(color_pnl, axis=1)
-    st.dataframe(styled_trades, use_container_width=True)
+st.dataframe(styled_trades, use_container_width=True)
     
     total_pl = df_trades['Unrealized_PL'].sum()
     win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
