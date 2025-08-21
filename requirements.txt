@@ -1,5 +1,4 @@
 beautifulsoup4>=4.12.0
-dhanhq==2.0.2
 feedparser>=6.0.10
 google-auth>=2.22.0
 google-auth-httplib2>=0.1.0
@@ -23,3 +22,25 @@ pandas
 numpy
 requests
 streamlit
+
+# Core packages
+streamlit>=1.28.0
+requests>=2.31.0
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Excel & Timezone
+openpyxl>=3.1.0
+pytz>=2023.3
+
+# Plotting & Indicators
+plotly>=5.15.0
+ta>=0.10.2   # technical analysis library for RSI, EMA, etc.
+
+# Google Sheets (if you export)
+gspread>=5.10.0
+google-auth>=2.22.0
+
+# Dhan API SDK (must be latest from GitHub)
+git+https://github.com/dhan-oss/DhanHQ-py.git@main
