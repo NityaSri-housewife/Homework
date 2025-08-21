@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import io
 import json
 import requests
-from dhanhq import dhanhq
+from dhanhq import dhanhq 
 
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 minutes
