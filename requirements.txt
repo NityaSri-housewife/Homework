@@ -25,3 +25,4 @@ pandas
 numpy
 plotly
 ta
+dhanhq
