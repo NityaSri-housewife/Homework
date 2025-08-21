@@ -197,9 +197,9 @@ def process_dhan_data(dhan_data):
                 'askPrice': option.get('putAskPrice', 0)
             }
             
-            # Add to records
+            # Add to records with strikePrice at top level
             records.append({
-                'strikePrice': strike,
+                'strikePrice': strike,  # FIX: strikePrice at top level
                 'expiryDate': expiry_date,
                 'CE': ce_data,
                 'PE': pe_data
@@ -551,17 +551,20 @@ def analyze():
         # Process option chain data
         calls, puts = [], []
         for item in records:
+            # FIX: Access strikePrice at top level, not inside CE/PE
+            strike_price = item.get('strikePrice', 0)
+            
             if 'CE' in item and item['CE']['expiryDate'] == expiry:
                 ce = item['CE']
                 if ce['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('CE', underlying, ce['strikePrice'], T, r, ce['impliedVolatility'] / 100)
+                    greeks = calculate_greeks('CE', underlying, strike_price, T, r, ce['impliedVolatility'] / 100)
                     ce.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
                 calls.append(ce)
 
             if 'PE' in item and item['PE']['expiryDate'] == expiry:
                 pe = item['PE']
                 if pe['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('PE', underlying, pe['strikePrice'], T, r, pe['impliedVolatility'] / 100)
+                    greeks = calculate_greeks('PE', underlying, strike_price, T, r, pe['impliedVolatility'] / 100)
                     pe.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
                 puts.append(pe)
 
