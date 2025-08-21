@@ -367,7 +367,7 @@ def color_pnl(row):
                 colors.append('')
         return colors
     
-    styled_trades = df_trades.style.apply(color_pnl, axis=1)
+styled_trades = df_trades.style.apply(color_pnl, axis=1)
     st.dataframe(styled_trades, use_container_width=True)
     
     total_pl = df_trades['Unrealized_PL'].sum()
