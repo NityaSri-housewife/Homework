@@ -1,5 +1,4 @@
 beautifulsoup4>=4.12.0
-dhanhq==2.0.2
 feedparser>=6.0.10
 google-auth>=2.22.0
 google-auth-httplib2>=0.1.0
@@ -18,3 +17,4 @@ ta
 textblob>=0.17.1
 vaderSentiment>=3.3.2
 websockets
+git+https://github.com/dhan-oss/DhanHQ-py.git@main
