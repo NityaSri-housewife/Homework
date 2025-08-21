@@ -413,7 +413,7 @@ def analyze():
             vix_value = vix_data['data'][0]['lastPrice']
         except Exception as e:
             st.error(f"❌ Failed to get VIX data: {e}")
-            vix_value = 11 # Default value if API fails
+            vix_value = 15  # Default value if API fails
 
         # Set dynamic PCR thresholds based on VIX
         if vix_value > 12:
@@ -452,7 +452,11 @@ def analyze():
         today = datetime.now(timezone("Asia/Kolkata"))
         expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
         is_expiry_day = today.date() == expiry_date.date()
-                 
+        
+        if is_expiry_day:
+            st.info("📅 EXPIRY DAY DETECTED - Using specialized expiry day analysis")
+            send_telegram_message("⚠️ Expiry Day Detected. Using special expiry analysis.")
+            
             # Store spot history
             current_time_str = now.strftime("%H:%M:%S")
             new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
@@ -881,5 +885,3 @@ def analyze():
 # === Main Function Call ===
 if __name__ == "__main__":
     analyze()
-
-
