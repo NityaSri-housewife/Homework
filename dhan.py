@@ -357,7 +357,7 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
     for _, row in df.iterrows():
         strike = row['strikePrice']
         score = expiry_bias_score(row)
-         if score >= score_threshold and strike in support_levels:
+    if score >= score_threshold and strike in support_levels:
             entries.append({
                 'type': 'BUY CALL',
                 'strike': strike,
