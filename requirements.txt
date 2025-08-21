@@ -1,29 +1,25 @@
-# Core packages
+beautifulsoup4>=4.12.0
+dhanhq==2.0.2
+feedparser>=6.0.10
+google-auth>=2.22.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0
+lxml>=4.9.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+pandas>=2.0.0
+plotly>=5.15.0
+pytz>=2023.3
+requests>=2.31.0
+scipy>=1.10.0
 streamlit>=1.28.0
 streamlit-autorefresh>=0.0.1
-requests>=2.31.0
-pandas>=2.0.0
-numpy>=1.24.0
-scipy>=1.10.0
-pytz>=2023.3
-plotly>=5.15.0
-openpyxl>=3.1.0
-
-# Google integration
-gspread>=5.10.0
-google-auth>=2.22.0
-google-auth-oauthlib>=1.0.0
-google-auth-httplib2>=0.1.0
-
-# Sentiment / scraping
-vaderSentiment>=3.3.2
+ta
 textblob>=0.17.1
-feedparser>=6.0.10
-beautifulsoup4>=4.12.0
-lxml>=4.9.0
-
-# Trading SDK
-dhanhq==2.1.0
-
-# Technical indicators
-ta>=0.11.1
+vaderSentiment>=3.3.2
+dhanhq
+plotly
+pandas
+numpy
+requests
+streamlit
