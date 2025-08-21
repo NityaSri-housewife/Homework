@@ -17,3 +17,4 @@ streamlit-autorefresh>=0.0.1
 ta
 textblob>=0.17.1
 vaderSentiment>=3.3.2
+websockets
