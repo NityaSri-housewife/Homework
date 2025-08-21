@@ -23,4 +23,3 @@ pandas
 numpy
 requests
 streamlit
-git+https://github.com/dhan-oss/DhanHQ-py.git@main
