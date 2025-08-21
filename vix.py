@@ -396,13 +396,25 @@ def analyze():
         headers = {"User-Agent": "Mozilla/5.0"}
         session = requests.Session()
         session.headers.update(headers)
-        session.get("https://www.nseindia.com", timeout=5)
         
+        # First request to establish session
+        try:
+            session.get("https://www.nseindia.com", timeout=5)
+        except requests.exceptions.RequestException as e:
+            st.error(f"❌ Failed to establish NSE session: {e}")
+            return
+
         # Get VIX data first
         vix_url = "https://www.nseindia.com/api/equity-stockIndices?index=INDIA%20VIX"
-        vix_data = session.get(vix_url, timeout=10).json()
-        vix_value = vix_data['data'][0]['lastPrice']
-        
+        try:
+            vix_response = session.get(vix_url, timeout=10)
+            vix_response.raise_for_status()
+            vix_data = vix_response.json()
+            vix_value = vix_data['data'][0]['lastPrice']
+        except Exception as e:
+            st.error(f"❌ Failed to get VIX data: {e}")
+            vix_value = 15  # Default value if API fails
+
         # Set dynamic PCR thresholds based on VIX
         if vix_value > 12:
             st.session_state.pcr_threshold_bull = 2.0
@@ -415,8 +427,18 @@ def analyze():
 
         # Get option chain data
         url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-        response = session.get(url, timeout=10)
-        data = response.json()
+        try:
+            response = session.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            st.error(f"❌ Failed to get option chain data: {e}")
+            return
+
+        # Check if data is empty
+        if not data or 'records' not in data:
+            st.error("❌ Empty or invalid response from NSE API")
+            return
 
         records = data['records']['data']
         expiry = data['records']['expiryDates'][0]
@@ -442,9 +464,15 @@ def analyze():
             
             # Get previous close data
             prev_close_url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-            prev_close_data = session.get(prev_close_url, timeout=10).json()
-            prev_close = prev_close_data['data'][0]['previousClose']
-            
+            try:
+                prev_close_response = session.get(prev_close_url, timeout=10)
+                prev_close_response.raise_for_status()
+                prev_close_data = prev_close_response.json()
+                prev_close = prev_close_data['data'][0]['previousClose']
+            except Exception as e:
+                st.error(f"❌ Failed to get previous close data: {e}")
+                prev_close = underlying  # Fallback to current price
+
             # Process records with expiry day logic
             calls, puts = [], []
             for item in records:
@@ -549,6 +577,16 @@ def analyze():
         df['Level'] = df.apply(determine_level, axis=1)
 
         # Calculate bias scores
+        weights = {
+            'ChgOI_Bias': 1.5,
+            'Volume_Bias': 1.0,
+            'Gamma_Bias': 1.2,
+            'AskQty_Bias': 0.8,
+            'BidQty_Bias': 0.8,
+            'IV_Bias': 1.0,
+            'DVP_Bias': 1.5
+        }
+
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
             if abs(row['strikePrice'] - atm_strike) > 100:
@@ -834,9 +872,15 @@ def analyze():
         # Auto update call log with current price
         auto_update_call_log(underlying)
 
+    except json.JSONDecodeError as e:
+        st.error("❌ Failed to decode JSON response from NSE API. The market might be closed or the API is unavailable.")
+        send_telegram_message("❌ NSE API JSON decode error - Market may be closed")
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Network error: {e}")
+        send_telegram_message(f"❌ Network error: {str(e)}")
     except Exception as e:
-        st.error(f"❌ Error: {e}")
-        send_telegram_message(f"❌ Error: {str(e)}")
+        st.error(f"❌ Unexpected error: {e}")
+        send_telegram_message(f"❌ Unexpected error: {str(e)}")
 
 # === Main Function Call ===
 if __name__ == "__main__":
