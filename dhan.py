@@ -185,28 +185,20 @@ def get_dhan_option_chain(nifty_symbol="NIFTY", nifty_secId=None, vix_symbol="IN
     """Fetch option chain and VIX data from Dhan API"""
     try:
         # === Option Chain ===
-        if nifty_secId:
-            # Use secId (preferred)
-            option_chain_url = f"{DHAN_BASE_URL}/options/chains?secId={nifty_secId}&exchange=IDX_NSE"
-            headers = {"access-token": DHAN_ACCESS_TOKEN}
-            option_response = requests.get(option_chain_url, headers=headers, timeout=10)
-            option_response.raise_for_status()
-            option_data = option_response.json()
-        else:
-            # Use symbol + POST
-            option_chain_url = f"{DHAN_BASE_URL}/options/chains"
-            headers = {
-                "Content-Type": "application/json",
-                "access-token": DHAN_ACCESS_TOKEN
-            }
-            payload = {
-                "symbol": nifty_symbol,
-                "exchangeSegment": "IDX_NSE"
-            }
-            option_response = requests.post(option_chain_url, json=payload, headers=headers, timeout=10)
-            option_response.raise_for_status()
-            option_data = option_response.json()
+        option_chain_url = f"{DHAN_BASE_URL}/options/chains"
+        headers = {
+            "Content-Type": "application/json",
+            "access-token": DHAN_ACCESS_TOKEN
+        }
 
+        if nifty_secId:
+            payload = {"secId": nifty_secId, "exchangeSegment": "IDX_NSE"}
+        else:
+            payload = {"symbol": nifty_symbol, "exchangeSegment": "IDX_NSE"}
+
+        option_response = requests.post(option_chain_url, json=payload, headers=headers, timeout=10)
+        option_response.raise_for_status()
+        option_data = option_response.json()
         underlying = option_data.get("records", {}).get("underlyingValue", None)
 
         # === VIX ===
@@ -226,6 +218,7 @@ def get_dhan_option_chain(nifty_symbol="NIFTY", nifty_secId=None, vix_symbol="IN
     except Exception as e:
         st.error(f"❌ Dhan API error: {e}")
         return None
+
 
 def process_dhan_data(dhan_data):
     """Process Dhan API data into the format expected by the existing code"""
