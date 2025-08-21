@@ -452,8 +452,7 @@ def analyze():
         today = datetime.now(timezone("Asia/Kolkata"))
         expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
         is_expiry_day = today.date() == expiry_date.date()
-        
-            
+                 
             # Store spot history
             current_time_str = now.strftime("%H:%M:%S")
             new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
@@ -882,4 +881,5 @@ def analyze():
 # === Main Function Call ===
 if __name__ == "__main__":
     analyze()
+
 
