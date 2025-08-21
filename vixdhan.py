@@ -164,7 +164,8 @@ def process_dhan_data(dhan_data):
     # Process option chain data
     if isinstance(option_chain, dict) and 'data' in option_chain:
         for option in option_chain['data']:
-            strike = option.get('strikePrice', 0)
+            # FIX: Use 'strike_price' instead of 'strikePrice'
+            strike = option.get('strike_price', 0)
             
             # Create CE data
             ce_data = {
