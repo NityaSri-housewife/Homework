@@ -105,32 +105,36 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
 
-def get_dhan_quote(symbol=None, secId=None, exchangeSegment="NSE_INDEX"):
-    """Get quote data from Dhan API - handles both Index/Stock and Option/Future instruments"""
+def get_dhan_quote(symbol=None, secId=None, exchangeSegment="IDX_NSE"):
+    """Get quote data from Dhan API - works for Index/Stock/Options/Futures"""
     headers = {
+        "Content-Type": "application/json",
         "access-token": DHAN_ACCESS_TOKEN
     }
-    
+
     try:
         if secId:
-            # For derivatives (Options/Futures) - use secId endpoint
+            # For Options/Futures - always use secId endpoint (GET is OK)
             url = f"{DHAN_BASE_URL}/quotes?secId={secId}&exchange={exchangeSegment}"
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             return response.json()
-        else:
-            # For Index/Stock - use intraday endpoint
-            url = f"{DHAN_BASE_URL}/quotes/intraday"
-            params = {
+        elif symbol:
+            # For Index/Stock - POST request to /quotes endpoint
+            url = f"{DHAN_BASE_URL}/quotes"
+            payload = {
                 "symbol": symbol,
                 "exchangeSegment": exchangeSegment
             }
-            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
             response.raise_for_status()
             return response.json()
+        else:
+            raise ValueError("Either symbol or secId must be provided")
+
     except Exception as e:
         st.error(f"❌ Dhan API error: {e}")
-        return None
+        return None 
 
 def get_security_id(symbol_name, instrument_type="INDEX"):
     """Automatically find security ID for a given symbol using instruments CSV"""
@@ -149,13 +153,8 @@ def get_security_id(symbol_name, instrument_type="INDEX"):
             return security_id
         
         # If not found in CSV, try common indices
-        common_ids = {
-            "NIFTY": "999920000",
-            "BANKNIFTY": "999920005", 
-            "INDIAVIX": "999920013",
-            "NIFTY50": "999920000",
-            "NIFTY 50": "999920000"
-        }
+        if symbol_upper in {"NIFTY", "BANKNIFTY", "INDIAVIX", "NIFTY50", "NIFTY 50"}:
+    return None
         
         if symbol_upper in common_ids:
             security_id = common_ids[symbol_upper]
@@ -182,46 +181,48 @@ def get_exchange_segment(symbol_name):
     # Default to equity for stocks
     return "NSE_EQUITY"
 
-def get_dhan_option_chain():
-    """Fetch option chain data from Dhan API with automatic security ID detection"""
+def get_dhan_option_chain(nifty_symbol="NIFTY", nifty_secId=None, vix_symbol="INDIAVIX", vix_secId=None):
+    """Fetch option chain and VIX data from Dhan API"""
     try:
-        # Get security IDs or use symbol-based approach
-        nifty_security_id = get_security_id("NIFTY")
-        vix_security_id = get_security_id("INDIAVIX")
-        
-        # Get Nifty spot price
-        if nifty_security_id:
-            # Use secId approach
-            nifty_data = get_dhan_quote(secId=nifty_security_id, exchangeSegment="NSE")
+        # === Option Chain ===
+        if nifty_secId:
+            # Use secId (preferred)
+            option_chain_url = f"{DHAN_BASE_URL}/options/chains?secId={nifty_secId}&exchange=IDX_NSE"
+            headers = {"access-token": DHAN_ACCESS_TOKEN}
+            option_response = requests.get(option_chain_url, headers=headers, timeout=10)
+            option_response.raise_for_status()
+            option_data = option_response.json()
         else:
-            # Use symbol approach for indices
-            nifty_data = get_dhan_quote(symbol="NIFTY", exchangeSegment=get_exchange_segment("NIFTY"))
-        
-        underlying = nifty_data[0]['lastPrice'] if nifty_data and len(nifty_data) > 0 else 0
-        
-        # Get option chain data - always use secId for options
-        option_chain_url = f"{DHAN_BASE_URL}/options/chains?secId={nifty_security_id or '999920000'}&exchange=NSE"
-        headers = {"access-token": DHAN_ACCESS_TOKEN}
-        option_response = requests.get(option_chain_url, headers=headers, timeout=10)
-        option_response.raise_for_status()
-        option_data = option_response.json()
-        
-        # Get VIX data
-        if vix_security_id:
-            # Use secId approach
-            vix_data = get_dhan_quote(secId=vix_security_id, exchangeSegment="NSE")
+            # Use symbol + POST
+            option_chain_url = f"{DHAN_BASE_URL}/options/chains"
+            headers = {
+                "Content-Type": "application/json",
+                "access-token": DHAN_ACCESS_TOKEN
+            }
+            payload = {
+                "symbol": nifty_symbol,
+                "exchangeSegment": "IDX_NSE"
+            }
+            option_response = requests.post(option_chain_url, json=payload, headers=headers, timeout=10)
+            option_response.raise_for_status()
+            option_data = option_response.json()
+
+        underlying = option_data.get("records", {}).get("underlyingValue", None)
+
+        # === VIX ===
+        if vix_secId:
+            vix_data = get_dhan_quote(secId=vix_secId, exchangeSegment="NSE")
         else:
-            # Use symbol approach
-            vix_data = get_dhan_quote(symbol="INDIAVIX", exchangeSegment=get_exchange_segment("INDIAVIX"))
-        
-        vix_value = vix_data[0]['lastPrice'] if vix_data and len(vix_data) > 0 else 11
-        
+            vix_data = get_dhan_quote(symbol=vix_symbol, exchangeSegment="IDX_NSE")
+
+        vix_value = vix_data[0]["lastPrice"] if vix_data and isinstance(vix_data, list) and len(vix_data) > 0 else 11
+
         return {
             "underlying": underlying,
             "vix": vix_value,
             "option_chain": option_data
         }
-        
+
     except Exception as e:
         st.error(f"❌ Dhan API error: {e}")
         return None
