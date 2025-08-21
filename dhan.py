@@ -337,7 +337,7 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
                 'reason': 'Bearish score + resistance zone'
             })
     return entries
-    def display_enhanced_trade_log():
+def display_enhanced_trade_log():
     """Display formatted trade log with P&L calculations"""
     if not st.session_state.trade_log:
         st.info("No trades logged yet")
@@ -353,7 +353,7 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
             lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
         )
     
-    def color_pnl(row):
+def color_pnl(row):
         colors = []
         for col in row.index:
             if col == 'Unrealized_PL':
