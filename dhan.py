@@ -1013,91 +1013,91 @@ def analyze():
                 break
 
         # === Main Display ===
-st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
-st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
-st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
+        st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
+        st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
+        st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
+        
+        # Plot price action
+        plot_price_with_sr()
 
-# Plot price action
-plot_price_with_sr()
+        if suggested_trade:
+            st.info(f"🔹 {atm_signal}\n{suggested_trade}")
+        
+        # Option Chain Summary
+        try:
+            with st.expander("📊 Option Chain Summary"):
+                st.info(f"""
+                ℹ️ PCR Interpretation (VIX: {vix_value}):
+                - >{st.session_state.pcr_threshold_bull} = Bullish
+                - <{st.session_state.pcr_threshold_bear} = Bearish
+                - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
+                """)
+                st.dataframe(styled_df)
+        except Exception as e:
+            st.error(f"Error displaying option chain: {e}")
+        
+        # Trade Log
+        if st.session_state.trade_log:
+            st.markdown("### 📜 Trade Log")
+            st.dataframe(pd.DataFrame(st.session_state.trade_log))
 
-if suggested_trade:
-    st.info(f"🔹 {atm_signal}\n{suggested_trade}")
-
-# Option Chain Summary
-try:
-    with st.expander("📊 Option Chain Summary"):
-        st.info(f"""
-        ℹ️ PCR Interpretation (VIX: {vix_value}):
-        - >{st.session_state.pcr_threshold_bull} = Bullish
-        - <{st.session_state.pcr_threshold_bear} = Bearish
-        - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
-        """)
-        st.dataframe(styled_df)
-except Exception as e:
-    st.error(f"Error displaying option chain: {e}")
-
-# Trade Log
-if st.session_state.trade_log:
-    st.markdown("### 📜 Trade Log")
-    st.dataframe(pd.DataFrame(st.session_state.trade_log))
-
-# === Enhanced Features Section ===
-st.markdown("---")
-st.markdown("## 📈 Enhanced Features")
-
-# PCR Configuration
-st.markdown("### 🧮 PCR Configuration")
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.session_state.pcr_threshold_bull = st.number_input(
-        "Bullish PCR Threshold (>)", 
-        min_value=1.0, max_value=5.0, 
-        value=st.session_state.pcr_threshold_bull, 
-        step=0.1
-    )
-with col2:
-    st.session_state.pcr_threshold_bear = st.number_input(
-        "Bearish PCR Threshold (<)", 
-        min_value=0.1, max_value=1.0, 
-        value=st.session_state.pcr_threshold_bear, 
-        step=0.1
-    )
-with col3:
-    st.session_state.use_pcr_filter = st.checkbox(
-        "Enable PCR Filtering", 
-        value=st.session_state.use_pcr_filter
-    )
-
-# PCR History
-with st.expander("📈 PCR History"):
-    if not st.session_state.pcr_history.empty:
-        pcr_pivot = st.session_state.pcr_history.pivot_table(
-            index='Time', 
-            columns='Strike', 
-            values='PCR',
-            aggfunc='last'
-        )
-        st.line_chart(pcr_pivot)
-        st.dataframe(st.session_state.pcr_history)
-    else:
-        st.info("No PCR history recorded yet")
-
-# Enhanced Trade Log
-display_enhanced_trade_log()
-
-# Export functionality
-st.markdown("---")
-st.markdown("### 📥 Data Export")
-if st.button("Prepare Excel Export"):
-    st.session_state.export_data = True
-handle_export_data(df_summary, underlying)
-
-# Call Log Book
-st.markdown("---")
-display_call_log_book()
-
-# Auto update call log with current price
-auto_update_call_log(underlying)
+        # === Enhanced Features Section ===
+        st.markdown("---")
+        st.markdown("## 📈 Enhanced Features")
+        
+        # PCR Configuration
+        st.markdown("### 🧮 PCR Configuration")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.session_state.pcr_threshold_bull = st.number_input(
+                "Bullish PCR Threshold (>)", 
+                min_value=1.0, max_value=5.0, 
+                value=st.session_state.pcr_threshold_bull, 
+                step=0.1
+            )
+        with col2:
+            st.session_state.pcr_threshold_bear = st.number_input(
+                "Bearish PCR Threshold (<)", 
+                min_value=0.1, max_value=1.0, 
+                value=st.session_state.pcr_threshold_bear, 
+                step=0.1
+            )
+        with col3:
+            st.session_state.use_pcr_filter = st.checkbox(
+                "Enable PCR Filtering", 
+                value=st.session_state.use_pcr_filter
+            )
+        
+        # PCR History
+        with st.expander("📈 PCR History"):
+            if not st.session_state.pcr_history.empty:
+                pcr_pivot = st.session_state.pcr_history.pivot_table(
+                    index='Time', 
+                    columns='Strike', 
+                    values='PCR',
+                    aggfunc='last'
+                )
+                st.line_chart(pcr_pivot)
+                st.dataframe(st.session_state.pcr_history)
+            else:
+                st.info("No PCR history recorded yet")
+        
+        # Enhanced Trade Log
+        display_enhanced_trade_log()
+        
+        # Export functionality
+        st.markdown("---")
+        st.markdown("### 📥 Data Export")
+        if st.button("Prepare Excel Export"):
+            st.session_state.export_data = True
+        handle_export_data(df_summary, underlying)
+        
+        # Call Log Book
+        st.markdown("---")
+        display_call_log_book()
+        
+        # Auto update call log with current price
+        auto_update_call_log(underlying)
 
     except Exception as e:
         st.error(f"❌ Unexpected error: {e}")
