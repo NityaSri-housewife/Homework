@@ -216,7 +216,7 @@ def process_dhan_data(dhan_data):
     }
     
     return final_data, vix_value
-    def calculate_greeks(option_type, S, K, T, r, sigma):
+def calculate_greeks(option_type, S, K, T, r, sigma):
     """Calculate option greeks using Black-Scholes model"""
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
