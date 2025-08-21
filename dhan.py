@@ -11,10 +11,51 @@ import plotly.graph_objects as go
 import io
 import json
 import csv
+import os  # Add this import
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 minutes
+
+# === Instrument Loading ===
+INSTRUMENTS_FILE = "dhan-instruments.csv"
+
+def load_instruments():
+    """Load dhan-instruments.csv. If not found, download fresh file."""
+    if not os.path.exists(INSTRUMENTS_FILE):
+        st.warning("⚠️ dhan-instruments.csv not found. Downloading latest instruments list...")
+        try:
+            url = "https://api.dhan.co/v2/instruments.csv"
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            with open(INSTRUMENTS_FILE, "wb") as f:
+                f.write(r.content)
+            st.success("✅ dhan-instruments.csv downloaded successfully!")
+        except Exception as e:
+            st.error(f"❌ Failed to download instruments file: {e}")
+            # Create a default file as fallback
+            default_instruments = [
+                ["symbol", "securityId", "exchange"],
+                ["NIFTY", "999920000", "NSE"],
+                ["BANKNIFTY", "999920005", "NSE"], 
+                ["INDIAVIX", "999920013", "NSE"]
+            ]
+            with open(INSTRUMENTS_FILE, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerows(default_instruments)
+            st.info("📋 Created default instruments file as fallback")
+    
+    return pd.read_csv(INSTRUMENTS_FILE)
+
+# Load instruments at startup
+try:
+    instruments_df = load_instruments()
+    st.session_state.dhan_instruments = instruments_df
+except Exception as e:
+    st.error(f"❌ Failed to load instruments: {e}")
+    # Create empty dataframe as fallback
+    instruments_df = pd.DataFrame(columns=["symbol", "securityId", "exchange"])
+    st.session_state.dhan_instruments = {}
 
 # Initialize session state variables
 if 'price_data' not in st.session_state:
@@ -91,76 +132,23 @@ def get_dhan_quote(symbol=None, secId=None, exchangeSegment="NSE_INDEX"):
         st.error(f"❌ Dhan API error: {e}")
         return None
 
-def load_dhan_instruments():
-    """Load Dhan instruments from CSV file if available"""
-    try:
-        # Try to load from CSV file
-        instruments = {}
-        with open('dhan-instruments.csv', 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                symbol = row.get('symbol', '').upper()
-                security_id = row.get('securityId', '')
-                exchange = row.get('exchange', 'NSE')
-                if symbol and security_id:
-                    instruments[symbol] = {
-                        'securityId': security_id,
-                        'exchange': exchange
-                    }
-        st.session_state.dhan_instruments = instruments
-        return instruments
-    except FileNotFoundError:
-        st.warning("⚠️ dhan-instruments.csv not found. Using default security IDs.")
-        # Return default instruments
-        default_instruments = {
-            "NIFTY": {"securityId": "999920000", "exchange": "NSE"},
-            "BANKNIFTY": {"securityId": "999920005", "exchange": "NSE"},
-            "INDIAVIX": {"securityId": "999920013", "exchange": "NSE"},
-            "NIFTY50": {"securityId": "999920000", "exchange": "NSE"},
-            "NIFTY 50": {"securityId": "999920000", "exchange": "NSE"}
-        }
-        st.session_state.dhan_instruments = default_instruments
-        return default_instruments
-    except Exception as e:
-        st.error(f"❌ Error loading instruments: {e}")
-        return {}
-
 def get_security_id(symbol_name, instrument_type="INDEX"):
-    """Automatically find security ID for a given symbol"""
-    headers = {
-        "access-token": DHAN_ACCESS_TOKEN
-    }
-    
+    """Automatically find security ID for a given symbol using instruments CSV"""
     # Check if we already have this security ID cached
     if symbol_name in st.session_state.security_ids:
         return st.session_state.security_ids[symbol_name]
     
-    # Check if we have it in the instruments CSV
-    if symbol_name.upper() in st.session_state.dhan_instruments:
-        security_id = st.session_state.dhan_instruments[symbol_name.upper()]['securityId']
-        st.session_state.security_ids[symbol_name] = security_id
-        return security_id
-    
     try:
-        # Try to search for the security
-        search_url = f"{DHAN_BASE_URL}/search?q={symbol_name}"
-        response = requests.get(search_url, headers=headers, timeout=10)
+        # Lookup in instruments dataframe
+        symbol_upper = symbol_name.upper()
+        instrument = instruments_df[instruments_df['symbol'].str.upper() == symbol_upper]
         
-        if response.status_code == 200:
-            results = response.json()
-            
-            if results and isinstance(results, list):
-                for result in results:
-                    if (result.get('symbol', '').upper() == symbol_name.upper() or 
-                        result.get('name', '').upper() == symbol_name.upper()):
-                        
-                        security_id = result.get('securityId')
-                        if security_id:
-                            # Cache the security ID for future use
-                            st.session_state.security_ids[symbol_name] = security_id
-                            return security_id
-            
-        # If search fails or doesn't return results, try common security IDs
+        if not instrument.empty:
+            security_id = str(instrument.iloc[0]['securityId'])
+            st.session_state.security_ids[symbol_name] = security_id
+            return security_id
+        
+        # If not found in CSV, try common indices
         common_ids = {
             "NIFTY": "999920000",
             "BANKNIFTY": "999920005", 
@@ -169,26 +157,33 @@ def get_security_id(symbol_name, instrument_type="INDEX"):
             "NIFTY 50": "999920000"
         }
         
-        if symbol_name.upper() in common_ids:
-            security_id = common_ids[symbol_name.upper()]
+        if symbol_upper in common_ids:
+            security_id = common_ids[symbol_upper]
             st.session_state.security_ids[symbol_name] = security_id
             return security_id
             
         # If all else fails, return None (will use symbol-based approach)
-        st.warning(f"⚠️ Could not find security ID for {symbol_name}, using symbol-based approach")
+        st.warning(f"⚠️ Could not find security ID for {symbol_name} in instruments, using symbol-based approach")
         return None
         
     except Exception as e:
         st.error(f"❌ Error finding security ID for {symbol_name}: {e}")
-        # Return None to use symbol-based approach
         return None
+
+def get_exchange_segment(symbol_name):
+    """Determine exchange segment based on symbol type"""
+    symbol_upper = symbol_name.upper()
+    
+    # Check if it's an index
+    indices = {"NIFTY", "BANKNIFTY", "INDIAVIX", "NIFTY50", "NIFTY 50"}
+    if symbol_upper in indices:
+        return "NSE_INDEX"
+    
+    # Default to equity for stocks
+    return "NSE_EQUITY"
 
 def get_dhan_option_chain():
     """Fetch option chain data from Dhan API with automatic security ID detection"""
-    # Load instruments first
-    if not st.session_state.dhan_instruments:
-        load_dhan_instruments()
-    
     try:
         # Get security IDs or use symbol-based approach
         nifty_security_id = get_security_id("NIFTY")
@@ -196,11 +191,11 @@ def get_dhan_option_chain():
         
         # Get Nifty spot price
         if nifty_security_id:
-            # Use secId approach for derivatives
+            # Use secId approach
             nifty_data = get_dhan_quote(secId=nifty_security_id, exchangeSegment="NSE")
         else:
             # Use symbol approach for indices
-            nifty_data = get_dhan_quote(symbol="NIFTY", exchangeSegment="NSE_INDEX")
+            nifty_data = get_dhan_quote(symbol="NIFTY", exchangeSegment=get_exchange_segment("NIFTY"))
         
         underlying = nifty_data[0]['lastPrice'] if nifty_data and len(nifty_data) > 0 else 0
         
@@ -217,7 +212,7 @@ def get_dhan_option_chain():
             vix_data = get_dhan_quote(secId=vix_security_id, exchangeSegment="NSE")
         else:
             # Use symbol approach
-            vix_data = get_dhan_quote(symbol="INDIAVIX", exchangeSegment="NSE_INDEX")
+            vix_data = get_dhan_quote(symbol="INDIAVIX", exchangeSegment=get_exchange_segment("INDIAVIX"))
         
         vix_value = vix_data[0]['lastPrice'] if vix_data and len(vix_data) > 0 else 11
         
