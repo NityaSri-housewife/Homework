@@ -154,7 +154,7 @@ def get_security_id(symbol_name, instrument_type="INDEX"):
         
         # If not found in CSV, try common indices
         if symbol_upper in {"NIFTY", "BANKNIFTY", "INDIAVIX", "NIFTY50", "NIFTY 50"}:
-    return None
+           return None
         
         if symbol_upper in common_ids:
             security_id = common_ids[symbol_upper]
