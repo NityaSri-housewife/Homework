@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import io
 import json
 import requests
-from dhanhq import DhanContext, dhanhq
+from dhanhq import dhanhq
 
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 minutes
@@ -50,12 +50,10 @@ DHAN_ACCESS_TOKEN = st.secrets["dhan"]["access_token"]
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = st.secrets["telegram"]["bot_token"]
 TELEGRAM_CHAT_ID = st.secrets["telegram"]["chat_id"]
-
 def initialize_dhan_client():
     """Initialize Dhan client with credentials"""
     try:
-        dhan_context = DhanContext(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
-        client = dhanhq(dhan_context)
+        client = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
         st.session_state.dhan_client = client
         return client
     except Exception as e:
@@ -218,8 +216,7 @@ def process_dhan_data(dhan_data):
     }
     
     return final_data, vix_value
-
-def calculate_greeks(option_type, S, K, T, r, sigma):
+    def calculate_greeks(option_type, S, K, T, r, sigma):
     """Calculate option greeks using Black-Scholes model"""
     d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
@@ -340,8 +337,7 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
                 'reason': 'Bearish score + resistance zone'
             })
     return entries
-
-def display_enhanced_trade_log():
+    def display_enhanced_trade_log():
     """Display formatted trade log with P&L calculations"""
     if not st.session_state.trade_log:
         st.info("No trades logged yet")
@@ -540,8 +536,7 @@ def display_call_log_book():
             file_name="call_log_book.csv",
             mime="text/csv"
         )
-
-def analyze():
+        def analyze():
     """Main analysis function"""
     # Initialize Dhan client if not already done
     if not st.session_state.dhan_client:
@@ -689,8 +684,7 @@ def analyze():
                                'bidQty_CE', 'bidQty_PE']])
             
             return  # Exit early after expiry day processing
-            
-        # Non-expiry day processing
+# Non-expiry day processing
         T = max((expiry_date - today).days, 1) / 365
         r = 0.06
 
@@ -932,8 +926,7 @@ def analyze():
 
                 signal_sent = True
                 break
-
-        # === Main Display ===
+                # === Main Display ===
         st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
         st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
         st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
