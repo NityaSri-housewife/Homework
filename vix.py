@@ -453,9 +453,6 @@ def analyze():
         expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
         is_expiry_day = today.date() == expiry_date.date()
         
-        if is_expiry_day:
-            st.info("📅 EXPIRY DAY DETECTED - Using specialized expiry day analysis")
-            send_telegram_message("⚠️ Expiry Day Detected. Using special expiry analysis.")
             
             # Store spot history
             current_time_str = now.strftime("%H:%M:%S")
@@ -885,3 +882,4 @@ def analyze():
 # === Main Function Call ===
 if __name__ == "__main__":
     analyze()
+
