@@ -11,7 +11,6 @@ from typing import Optional, Tuple, Dict
 import numpy as np
 import pandas as pd
 import requests
-import telegram
 
 # ===================== CONFIG =====================
 SYMBOL = os.getenv("NSE_SYMBOL", "NIFTY").upper()  # "NIFTY" or "BANKNIFTY"
@@ -27,7 +26,7 @@ PCR_BEAR = float(os.getenv("PCR_BEAR", 0.9))
 TOP_N_DELTA_OI = int(os.getenv("TOP_N_DELTA_OI", 5))
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", 20))
 
-# Telegram Config
+# Telegram Config (optional)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -45,17 +44,24 @@ HEADERS = {
 
 # ===================== TELEGRAM FUNCTIONS =====================
 def send_telegram_message(message):
-    """Send message via Telegram bot"""
+    """Send message via Telegram bot (optional feature)"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        st.warning("Telegram bot token or chat ID not configured")
-        return
+        return False
     
     try:
+        # Try to import telegram, but don't fail if not available
+        try:
+            import telegram
+        except ImportError:
+            st.warning("Telegram package not installed. Install with: pip install python-telegram-bot")
+            return False
+            
         bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        st.success("Telegram message sent")
+        return True
     except Exception as e:
         st.error(f"Failed to send Telegram message: {e}")
+        return False
 
 # ===================== TIME VALIDATION =====================
 def is_valid_trading_time():
@@ -77,7 +83,10 @@ def is_valid_trading_time():
 def _nse_session() -> requests.Session:
     s = requests.Session()
     # Seed cookies: visit homepage and option-chain page once
-    s.get(BASE, headers=HEADERS, timeout=HTTP_TIMEOUT)
+    try:
+        s.get(BASE, headers=HEADERS, timeout=HTTP_TIMEOUT)
+    except:
+        pass
     return s
 
 def fetch_option_chain() -> dict:
@@ -385,7 +394,7 @@ def append_to_excel(overview: pd.DataFrame,
     try:
         from openpyxl import load_workbook
     except ImportError:
-        st.error("openpyxl not installed. Excel functionality disabled.")
+        st.warning("openpyxl not installed. Excel functionality disabled.")
         return
 
     if not os.path.exists(EXCEL_FILE):
@@ -413,14 +422,12 @@ def append_to_excel(overview: pd.DataFrame,
         if "Chain" in book.sheetnames:
             del book["Chain"]
             book.create_sheet("Chain")
-            book.save(EXCEL_FILE)
         chain_aug.to_excel(w, sheet_name="Chain", index=False)
         
         # Top ΔOI replace
         if "TopDeltaOI" in book.sheetnames:
             del book["TopDeltaOI"]
             book.create_sheet("TopDeltaOI")
-            book.save(EXCEL_FILE)
         pd.concat([
             top_ce.assign(Type='CEΔOI'),
             top_pe.assign(Type='PEΔOI')
@@ -430,7 +437,6 @@ def append_to_excel(overview: pd.DataFrame,
         if "BiasScoring" in book.sheetnames:
             del book["BiasScoring"]
             book.create_sheet("BiasScoring")
-            book.save(EXCEL_FILE)
         bias_df.to_excel(w, sheet_name="BiasScoring", index=False)
         
         # SignalsLog append
