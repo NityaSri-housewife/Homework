@@ -353,6 +353,8 @@ def display_enhanced_trade_log():
             lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
         )
     
+# === P&L Coloring and Metrics ===
+
 def color_pnl(row):
     colors = []
     for col in row.index:
@@ -368,19 +370,23 @@ def color_pnl(row):
     return colors
 
 # Display styled dataframe
-st.write(df_trades.style.apply(color_pnl, axis=1))
+if not df_trades.empty:
+    st.write(df_trades.style.apply(color_pnl, axis=1))
 
-# Metrics
-total_pl = df_trades['Unrealized_PL'].sum()
-win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
+    # Metrics
+    total_pl = df_trades['Unrealized_PL'].sum()
+    win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Total P&L", f"₹{total_pl:,.0f}")
-with col2:
-    st.metric("Win Rate", f"{win_rate:.1f}%")
-with col3:
-    st.metric("Total Trades", len(df_trades))
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total P&L", f"₹{total_pl:,.0f}")
+    with col2:
+        st.metric("Win Rate", f"{win_rate:.1f}%")
+    with col3:
+        st.metric("Total Trades", len(df_trades))
+else:
+    st.info("No trades data available.")
+
 
 
 def create_export_data(df_summary, trade_log, spot_price):
