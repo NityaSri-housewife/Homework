@@ -113,68 +113,6 @@ def get_support_resistance_zones(df, spot):
     
     return support_zone, resistance_zone
 
-def expiry_bias_score(row):
-    """Calculate bias score for expiry day analysis"""
-    score = 0
-    
-    # OI + Price Based Bias
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] > row['previousClose_CE']:
-        score += 1  # New CE longs → Bullish
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] > row['previousClose_PE']:
-        score -= 1  # New PE longs → Bearish
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] < row['previousClose_CE']:
-        score -= 1  # CE writing → Bearish
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] < row['previousClose_PE']:
-        score += 1  # PE writing → Bullish
-    
-    # Bid Volume Dominance
-    if 'bidQty_CE' in row and 'bidQty_PE' in row:
-        if row['bidQty_CE'] > row['bidQty_PE'] * 1.5:
-            score += 1  # CE Bid dominance → Bullish
-        if row['bidQty_PE'] > row['bidQty_CE'] * 1.5:
-            score -= 1  # PE Bid dominance → Bearish
-    
-    # Volume Churn vs OI
-    if row['totalTradedVolume_CE'] > 2 * row['openInterest_CE']:
-        score -= 0.5  # CE churn → Possibly noise
-    if row['totalTradedVolume_PE'] > 2 * row['openInterest_PE']:
-        score += 0.5  # PE churn → Possibly noise
-    
-    # Bid-Ask Pressure
-    if 'underlyingValue' in row:
-        if abs(row['lastPrice_CE'] - row['underlyingValue']) < abs(row['lastPrice_PE'] - row['underlyingValue']):
-            score += 0.5  # CE closer to spot → Bullish
-        else:
-            score -= 0.5  # PE closer to spot → Bearish
-    
-    return score
-
-def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1.5):
-    """Generate entry signals for expiry day"""
-    entries = []
-    for _, row in df.iterrows():
-        strike = row['strikePrice']
-        score = expiry_bias_score(row)
-
-        if score >= score_threshold and strike in support_levels:
-            entries.append({
-                'type': 'BUY CALL',
-                'strike': strike,
-                'score': score,
-                'ltp': row['lastPrice_CE'],
-                'reason': 'Bullish score + support zone'
-            })
-
-        if score <= -score_threshold and strike in resistance_levels:
-            entries.append({
-                'type': 'BUY PUT',
-                'strike': strike,
-                'score': score,
-                'ltp': row['lastPrice_PE'],
-                'reason': 'Bearish score + resistance zone'
-            })
-    return entries
-
 def display_enhanced_trade_log():
     """Display formatted trade log with P&L calculations"""
     if not st.session_state.trade_log:
@@ -448,104 +386,9 @@ def analyze():
         st.markdown(f"### 📍 Spot Price: {underlying}")
         st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status}) | PCR Thresholds: Bull >{st.session_state.pcr_threshold_bull} | Bear <{st.session_state.pcr_threshold_bear}")
 
-        # Check if expiry day
-        today = datetime.now(timezone("Asia/Kolkata"))
-        expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
-        is_expiry_day = today.date() == expiry_date.date()
-        
-        if is_expiry_day:
-            st.info("📅 EXPIRY DAY DETECTED - Using specialized expiry day analysis")
-            
-            
-            # Store spot history
-            current_time_str = now.strftime("%H:%M:%S")
-            new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-            st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
-            
-            # Get previous close data
-            prev_close_url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-            try:
-                prev_close_response = session.get(prev_close_url, timeout=10)
-                prev_close_response.raise_for_status()
-                prev_close_data = prev_close_response.json()
-                prev_close = prev_close_data['data'][0]['previousClose']
-            except Exception as e:
-                st.error(f"❌ Failed to get previous close data: {e}")
-                prev_close = underlying  # Fallback to current price
-
-            # Process records with expiry day logic
-            calls, puts = [], []
-            for item in records:
-                if 'CE' in item and item['CE']['expiryDate'] == expiry:
-                    ce = item['CE']
-                    ce['previousClose_CE'] = prev_close
-                    ce['underlyingValue'] = underlying
-                    calls.append(ce)
-                if 'PE' in item and item['PE']['expiryDate'] == expiry:
-                    pe = item['PE']
-                    pe['previousClose_PE'] = prev_close
-                    pe['underlyingValue'] = underlying
-                    puts.append(pe)
-            
-            df_ce = pd.DataFrame(calls)
-            df_pe = pd.DataFrame(puts)
-            df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
-            
-            # Get support/resistance levels
-            df['Level'] = df.apply(determine_level, axis=1)
-            support_levels = df[df['Level'] == "Support"]['strikePrice'].unique()
-            resistance_levels = df[df['Level'] == "Resistance"]['strikePrice'].unique()
-            
-            # Generate expiry day signals
-            expiry_signals = expiry_entry_signal(df, support_levels, resistance_levels)
-            
-            # Display expiry day signals
-            st.markdown("### 🎯 Expiry Day Signals")
-            if expiry_signals:
-                for signal in expiry_signals:
-                    st.success(f"""
-                    {signal['type']} at {signal['strike']} 
-                    (Score: {signal['score']:.1f}, LTP: ₹{signal['ltp']})
-                    Reason: {signal['reason']}
-                    """)
-                    
-                    # Add to trade log
-                    st.session_state.trade_log.append({
-                        "Time": now.strftime("%H:%M:%S"),
-                        "Strike": signal['strike'],
-                        "Type": 'CE' if 'CALL' in signal['type'] else 'PE',
-                        "LTP": signal['ltp'],
-                        "Target": round(signal['ltp'] * 1.2, 2),
-                        "SL": round(signal['ltp'] * 0.8, 2),
-                        "VIX": vix_value,
-                        "PCR_Thresholds": f"Bull>{st.session_state.pcr_threshold_bull} Bear<{st.session_state.pcr_threshold_bear}"
-                    })
-                    
-                    # Send Telegram alert
-                    send_telegram_message(
-                        f"📅 EXPIRY DAY SIGNAL\n"
-                        f"VIX: {vix_value} ({volatility_status})\n"
-                        f"PCR Thresholds: Bull>{st.session_state.pcr_threshold_bull} Bear<{st.session_state.pcr_threshold_bear}\n"
-                        f"Type: {signal['type']}\n"
-                        f"Strike: {signal['strike']}\n"
-                        f"Score: {signal['score']:.1f}\n"
-                        f"LTP: ₹{signal['ltp']}\n"
-                        f"Reason: {signal['reason']}\n"
-                        f"Spot: {underlying}"
-                    )
-            else:
-                st.warning("No strong expiry day signals detected")
-            
-            # Show expiry day data
-            with st.expander("📊 Expiry Day Option Chain"):
-                df['ExpiryBiasScore'] = df.apply(expiry_bias_score, axis=1)
-                st.dataframe(df[['strikePrice', 'ExpiryBiasScore', 'lastPrice_CE', 'lastPrice_PE', 
-                               'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
-                               'bidQty_CE', 'bidQty_PE']])
-            
-            return  # Exit early after expiry day processing
-            
         # Non-expiry day processing
+        expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
+        today = datetime.now(timezone("Asia/Kolkata"))
         T = max((expiry_date - today).days, 1) / 365
         r = 0.06
 
@@ -885,4 +728,3 @@ def analyze():
 # === Main Function Call ===
 if __name__ == "__main__":
     analyze()
-
