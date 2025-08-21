@@ -1,6 +1,5 @@
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -10,52 +9,12 @@ from pytz import timezone
 import plotly.graph_objects as go
 import io
 import json
-import csv
-import os  # Add this import
+import requests
+from dhanhq import DhanContext, dhanhq
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
 st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 minutes
-
-# === Instrument Loading ===
-INSTRUMENTS_FILE = "dhan-instruments.csv"
-
-def load_instruments():
-    """Load dhan-instruments.csv. If not found, download fresh file."""
-    if not os.path.exists(INSTRUMENTS_FILE):
-        st.warning("⚠️ dhan-instruments.csv not found. Downloading latest instruments list...")
-        try:
-            url = "https://api.dhan.co/v2/instruments.csv"
-            r = requests.get(url, timeout=30)
-            r.raise_for_status()
-            with open(INSTRUMENTS_FILE, "wb") as f:
-                f.write(r.content)
-            st.success("✅ dhan-instruments.csv downloaded successfully!")
-        except Exception as e:
-            st.error(f"❌ Failed to download instruments file: {e}")
-            # Create a default file as fallback
-            default_instruments = [
-                ["symbol", "securityId", "exchange"],
-                ["NIFTY", "999920000", "NSE"],
-                ["BANKNIFTY", "999920005", "NSE"], 
-                ["INDIAVIX", "999920013", "NSE"]
-            ]
-            with open(INSTRUMENTS_FILE, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerows(default_instruments)
-            st.info("📋 Created default instruments file as fallback")
-    
-    return pd.read_csv(INSTRUMENTS_FILE)
-
-# Load instruments at startup
-try:
-    instruments_df = load_instruments()
-    st.session_state.dhan_instruments = instruments_df
-except Exception as e:
-    st.error(f"❌ Failed to load instruments: {e}")
-    # Create empty dataframe as fallback
-    instruments_df = pd.DataFrame(columns=["symbol", "securityId", "exchange"])
-    st.session_state.dhan_instruments = {}
 
 # Initialize session state variables
 if 'price_data' not in st.session_state:
@@ -72,8 +31,8 @@ if 'resistance_zone' not in st.session_state:
     st.session_state.resistance_zone = (None, None)
 if 'security_ids' not in st.session_state:
     st.session_state.security_ids = {}
-if 'dhan_instruments' not in st.session_state:
-    st.session_state.dhan_instruments = {}
+if 'dhan_client' not in st.session_state:
+    st.session_state.dhan_client = None
 
 # Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
@@ -88,11 +47,21 @@ if 'pcr_history' not in st.session_state:
 # === Dhan API Config ===
 DHAN_CLIENT_ID = st.secrets["dhan"]["client_id"]
 DHAN_ACCESS_TOKEN = st.secrets["dhan"]["access_token"]
-DHAN_BASE_URL = "https://api.dhan.co"
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = st.secrets["telegram"]["bot_token"]
 TELEGRAM_CHAT_ID = st.secrets["telegram"]["chat_id"]
+
+def initialize_dhan_client():
+    """Initialize Dhan client with credentials"""
+    try:
+        dhan_context = DhanContext(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
+        client = dhanhq(dhan_context)
+        st.session_state.dhan_client = client
+        return client
+    except Exception as e:
+        st.error(f"❌ Failed to initialize Dhan client: {e}")
+        return None
 
 def send_telegram_message(message):
     """Send message via Telegram bot"""
@@ -105,120 +74,82 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
 
-def get_dhan_quote(symbol=None, secId=None, exchangeSegment="IDX_NSE"):
-    """Get quote data from Dhan API - works for Index/Stock/Options/Futures"""
-    headers = {
-        "Content-Type": "application/json",
-        "access-token": DHAN_ACCESS_TOKEN
-    }
-
-    try:
-        if secId:
-            # For Options/Futures - always use secId endpoint (GET is OK)
-            url = f"{DHAN_BASE_URL}/quotes?secId={secId}&exchange={exchangeSegment}"
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            return response.json()
-        elif symbol:
-            # For Index/Stock - POST request to /quotes endpoint
-            url = f"{DHAN_BASE_URL}/quotes"
-            payload = {
-                "symbol": symbol,
-                "exchangeSegment": exchangeSegment
-            }
-            response = requests.post(url, json=payload, headers=headers, timeout=10)
-            response.raise_for_status()
-            return response.json()
-        else:
-            raise ValueError("Either symbol or secId must be provided")
-
-    except Exception as e:
-        st.error(f"❌ Dhan API error: {e}")
-        return None 
-
-def get_security_id(symbol_name, instrument_type="INDEX"):
-    """Automatically find security ID for a given symbol using instruments CSV"""
-    # Check if we already have this security ID cached
+def get_security_id(symbol_name):
+    """Get security ID using DhanHQ SDK"""
     if symbol_name in st.session_state.security_ids:
         return st.session_state.security_ids[symbol_name]
     
+    client = st.session_state.dhan_client
+    if not client:
+        client = initialize_dhan_client()
+        if not client:
+            return None
+    
     try:
-        # Lookup in instruments dataframe
-        symbol_upper = symbol_name.upper()
-        instrument = instruments_df[instruments_df['symbol'].str.upper() == symbol_upper]
+        # Common indices fallback
+        common_ids = {
+            "NIFTY": "999920000",
+            "BANKNIFTY": "999920005", 
+            "INDIAVIX": "999920013",
+            "NIFTY50": "999920000",
+            "NIFTY 50": "999920000"
+        }
         
-        if not instrument.empty:
-            security_id = str(instrument.iloc[0]['securityId'])
-            st.session_state.security_ids[symbol_name] = security_id
-            return security_id
-        
-        # If not found in CSV, try common indices
-        if symbol_upper in {"NIFTY", "BANKNIFTY", "INDIAVIX", "NIFTY50", "NIFTY 50"}:
-           return None
-        
-        if symbol_upper in common_ids:
-            security_id = common_ids[symbol_upper]
+        if symbol_name.upper() in common_ids:
+            security_id = common_ids[symbol_name.upper()]
             st.session_state.security_ids[symbol_name] = security_id
             return security_id
             
-        # If all else fails, return None (will use symbol-based approach)
-        st.warning(f"⚠️ Could not find security ID for {symbol_name} in instruments, using symbol-based approach")
         return None
         
     except Exception as e:
-        st.error(f"❌ Error finding security ID for {symbol_name}: {e}")
+        st.error(f"❌ Error finding security ID: {e}")
         return None
 
-def get_exchange_segment(symbol_name):
-    """Determine exchange segment based on symbol type"""
-    symbol_upper = symbol_name.upper()
+def get_dhan_option_chain():
+    """Fetch option chain data using DhanHQ SDK"""
+    client = st.session_state.dhan_client
+    if not client:
+        client = initialize_dhan_client()
+        if not client:
+            return None
     
-    # Check if it's an index
-    indices = {"NIFTY", "BANKNIFTY", "INDIAVIX", "NIFTY50", "NIFTY 50"}
-    if symbol_upper in indices:
-        return "NSE_INDEX"
-    
-    # Default to equity for stocks
-    return "NSE_EQUITY"
-
-def get_dhan_option_chain(nifty_symbol="NIFTY", nifty_secId=None, vix_symbol="INDIAVIX", vix_secId=None):
-    """Fetch option chain and VIX data from Dhan API"""
     try:
-        # === Option Chain ===
-        option_chain_url = f"{DHAN_BASE_URL}/options/chains"
-        headers = {
-            "Content-Type": "application/json",
-            "access-token": DHAN_ACCESS_TOKEN
-        }
-
-        if nifty_secId:
-            payload = {"secId": nifty_secId, "exchangeSegment": "IDX_NSE"}
-        else:
-            payload = {"symbol": nifty_symbol, "exchangeSegment": "IDX_NSE"}
-
-        option_response = requests.post(option_chain_url, json=payload, headers=headers, timeout=10)
-        option_response.raise_for_status()
-        option_data = option_response.json()
-        underlying = option_data.get("records", {}).get("underlyingValue", None)
-
-        # === VIX ===
-        if vix_secId:
-            vix_data = get_dhan_quote(secId=vix_secId, exchangeSegment="NSE")
-        else:
-            vix_data = get_dhan_quote(symbol=vix_symbol, exchangeSegment="IDX_NSE")
-
-        vix_value = vix_data[0]["lastPrice"] if vix_data and isinstance(vix_data, list) and len(vix_data) > 0 else 11
-
+        # Get Nifty security ID
+        nifty_security_id = get_security_id("NIFTY") or "999920000"
+        
+        # Get current date for expiry
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
+        # Get option chain
+        option_chain = client.option_chain(
+            under_security_id=nifty_security_id,
+            under_exchange_segment="IDX_I",
+            expiry=current_date
+        )
+        
+        # Get Nifty spot price using ohlc_data
+        nifty_quote = client.ohlc_data(securities={"IDX_I": [nifty_security_id]})
+        underlying = 0
+        if nifty_quote and 'data' in nifty_quote and nifty_quote['data']:
+            underlying = nifty_quote['data'][0].get('lastPrice', 0)
+        
+        # Get VIX data
+        vix_security_id = get_security_id("INDIAVIX") or "999920013"
+        vix_quote = client.ohlc_data(securities={"IDX_I": [vix_security_id]})
+        vix_value = 11  # default
+        if vix_quote and 'data' in vix_quote and vix_quote['data']:
+            vix_value = vix_quote['data'][0].get('lastPrice', 11)
+        
         return {
             "underlying": underlying,
             "vix": vix_value,
-            "option_chain": option_data
+            "option_chain": option_chain
         }
-
+        
     except Exception as e:
-        st.error(f"❌ Dhan API error: {e}")
+        st.error(f"❌ Dhan option chain error: {e}")
         return None
-
 
 def process_dhan_data(dhan_data):
     """Process Dhan API data into the format expected by the existing code"""
@@ -232,47 +163,48 @@ def process_dhan_data(dhan_data):
     option_chain = dhan_data["option_chain"]
     
     # Process option chain data
-    for option in option_chain:
-        strike = option['strikePrice']
-        expiry = option['expiry']
-        
-        # Create CE data
-        ce_data = {
-            'strikePrice': strike,
-            'expiryDate': expiry,
-            'openInterest': option.get('callOpenInterest', 0),
-            'changeinOpenInterest': option.get('callChangeinOpenInterest', 0),
-            'totalTradedVolume': option.get('callTotalTradedVolume', 0),
-            'impliedVolatility': option.get('callImpliedVolatility', 0),
-            'lastPrice': option.get('callLastPrice', 0),
-            'bidQty': option.get('callBidQty', 0),
-            'askQty': option.get('callAskQty', 0),
-            'bidprice': option.get('callBidPrice', 0),
-            'askPrice': option.get('callAskPrice', 0)
-        }
-        
-        # Create PE data
-        pe_data = {
-            'strikePrice': strike,
-            'expiryDate': expiry,
-            'openInterest': option.get('putOpenInterest', 0),
-            'changeinOpenInterest': option.get('putChangeinOpenInterest', 0),
-            'totalTradedVolume': option.get('putTotalTradedVolume', 0),
-            'impliedVolatility': option.get('putImpliedVolatility', 0),
-            'lastPrice': option.get('putLastPrice', 0),
-            'bidQty': option.get('putBidQty', 0),
-            'askQty': option.get('putAskQty', 0),
-            'bidprice': option.get('putBidPrice', 0),
-            'askPrice': option.get('putAskPrice', 0)
-        }
-        
-        # Add to records
-        records.append({
-            'strikePrice': strike,
-            'expiryDate': expiry,
-            'CE': ce_data,
-            'PE': pe_data
-        })
+    if isinstance(option_chain, dict) and 'data' in option_chain:
+        for option in option_chain['data']:
+            strike = option.get('strikePrice', 0)
+            expiry = option.get('expiry', '')
+            
+            # Create CE data
+            ce_data = {
+                'strikePrice': strike,
+                'expiryDate': expiry,
+                'openInterest': option.get('callOpenInterest', 0),
+                'changeinOpenInterest': option.get('callChangeinOpenInterest', 0),
+                'totalTradedVolume': option.get('callTotalTradedVolume', 0),
+                'impliedVolatility': option.get('callImpliedVolatility', 0),
+                'lastPrice': option.get('callLastPrice', 0),
+                'bidQty': option.get('callBidQty', 0),
+                'askQty': option.get('callAskQty', 0),
+                'bidprice': option.get('callBidPrice', 0),
+                'askPrice': option.get('callAskPrice', 0)
+            }
+            
+            # Create PE data
+            pe_data = {
+                'strikePrice': strike,
+                'expiryDate': expiry,
+                'openInterest': option.get('putOpenInterest', 0),
+                'changeinOpenInterest': option.get('putChangeinOpenInterest', 0),
+                'totalTradedVolume': option.get('putTotalTradedVolume', 0),
+                'impliedVolatility': option.get('putImpliedVolatility', 0),
+                'lastPrice': option.get('putLastPrice', 0),
+                'bidQty': option.get('putBidQty', 0),
+                'askQty': option.get('putAskQty', 0),
+                'bidprice': option.get('putBidPrice', 0),
+                'askPrice': option.get('putAskPrice', 0)
+            }
+            
+            # Add to records
+            records.append({
+                'strikePrice': strike,
+                'expiryDate': expiry,
+                'CE': ce_data,
+                'PE': pe_data
+            })
     
     # Get unique expiry dates
     expiry_dates = sorted(list(set([record['expiryDate'] for record in records if 'expiryDate' in record])))
@@ -281,7 +213,7 @@ def process_dhan_data(dhan_data):
     final_data = {
         'records': {
             'data': records,
-            'expiryDates': expiry_dates,
+            'expiryDates': expiry_dates if expiry_dates else [datetime.now().strftime("%Y-%m-%d")],
             'underlyingValue': underlying
         }
     }
@@ -612,6 +544,10 @@ def display_call_log_book():
 
 def analyze():
     """Main analysis function"""
+    # Initialize Dhan client if not already done
+    if not st.session_state.dhan_client:
+        initialize_dhan_client()
+    
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
     
@@ -619,7 +555,7 @@ def analyze():
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
-        market_start = datetime.strptime("08:00", "%H:%M").time()
+        market_start = datetime.strptime("09:00", "%H:%M").time()
         market_end = datetime.strptime("15:40", "%H:%M").time()
 
         # Check market hours
@@ -627,12 +563,9 @@ def analyze():
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
             return
 
-        # Display security ID detection status
-        with st.spinner("🔍 Detecting security IDs..."):
-            nifty_security_id = get_security_id("NIFTY")
-            vix_security_id = get_security_id("INDIAVIX")
-            
-            st.info(f"Detected Security IDs - NIFTY: {nifty_security_id or 'Using Symbol'}, INDIAVIX: {vix_security_id or 'Using Symbol'}")
+        # Display Dhan connection status
+        with st.spinner("🔌 Connecting to Dhan API..."):
+            st.info("✅ Connected to DhanHQ API")
 
         # Get data from Dhan API
         dhan_data = get_dhan_option_chain()
@@ -1094,6 +1027,4 @@ def analyze():
 
 # === Main Function Call ===
 if __name__ == "__main__":
-    # Load Dhan instruments first
-    instruments_df = load_instruments()
     analyze()
