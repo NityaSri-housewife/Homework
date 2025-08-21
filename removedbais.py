@@ -570,7 +570,6 @@ def analyze():
 - IV Collapse, OI Unwind, Volume Spike expected
 - Modified signals will be generated
 """)
-            send_telegram_message("⚠️ Expiry Day Detected. Using special expiry analysis.")
             
             current_time_str = now.strftime("%H:%M:%S")
             new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
