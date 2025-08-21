@@ -53,7 +53,14 @@ TELEGRAM_CHAT_ID = st.secrets["telegram"]["chat_id"]
 def initialize_dhan_client():
     """Initialize Dhan client with credentials"""
     try:
-        client = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
+        from dhanhq import DhanContext, dhanhq
+        
+        # Create DhanContext first (this is the v2.1.0 way)
+        dhan_context = DhanContext(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
+        
+        # Then pass the context to dhanhq
+        client = dhanhq(dhan_context)
+        
         st.session_state.dhan_client = client
         return client
     except Exception as e:
@@ -112,27 +119,37 @@ def get_dhan_option_chain():
             return None
     
     try:
-        # Get Nifty security ID
-        nifty_security_id = get_security_id("NIFTY") or "999920000"
+        # Use correct Nifty security ID for IDX_I segment
+        nifty_security_id = "13"  # This is the correct ID for Nifty 50 in IDX_I
         
-        # Get current date for expiry
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        # Get nearest Thursday expiry (options expire on Thursdays)
+        current_date = datetime.now()
+        days_ahead = 3 - current_date.weekday()  # Thursday is 3
+        if days_ahead <= 0:  # Target next Thursday
+            days_ahead += 7
+        
+        nearest_thursday = current_date + timedelta(days=days_ahead)
+        expiry_date = nearest_thursday.strftime("%Y-%m-%d")
+        
+        print(f"Fetching option chain for Nifty ID: {nifty_security_id}, Expiry: {expiry_date}")
         
         # Get option chain
         option_chain = client.option_chain(
             under_security_id=nifty_security_id,
             under_exchange_segment="IDX_I",
-            expiry=current_date
+            expiry=expiry_date
         )
         
-        # Get Nifty spot price using ohlc_data
+        print(f"Option chain response: {option_chain}")
+        
+        # Get Nifty spot price
         nifty_quote = client.ohlc_data(securities={"IDX_I": [nifty_security_id]})
-        underlying = 0
+        underlying = 24000  # Default fallback
         if nifty_quote and 'data' in nifty_quote and nifty_quote['data']:
-            underlying = nifty_quote['data'][0].get('lastPrice', 0)
+            underlying = nifty_quote['data'][0].get('lastPrice', 24000)
         
         # Get VIX data
-        vix_security_id = get_security_id("INDIAVIX") or "999920013"
+        vix_security_id = "14"  # VIX security ID for IDX_I
         vix_quote = client.ohlc_data(securities={"IDX_I": [vix_security_id]})
         vix_value = 11  # default
         if vix_quote and 'data' in vix_quote and vix_quote['data']:
@@ -146,6 +163,7 @@ def get_dhan_option_chain():
         
     except Exception as e:
         st.error(f"❌ Dhan option chain error: {e}")
+        print(f"Detailed error: {str(e)}")
         return None
 
 def process_dhan_data(dhan_data):
