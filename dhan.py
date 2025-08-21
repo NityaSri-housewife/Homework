@@ -1101,5 +1101,5 @@ def analyze():
 # === Main Function Call ===
 if __name__ == "__main__":
     # Load Dhan instruments first
-    load_dhan_instruments()
+    instruments_df = load_instruments()
     analyze()
