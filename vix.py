@@ -351,7 +351,7 @@ def analyze():
             vix_value = vix_data['data'][0]['lastPrice']
         except Exception as e:
             st.error(f"❌ Failed to get VIX data: {e}")
-            vix_value = 15  # Default value if API fails
+            vix_value = 11  # Default value if API fails
 
         # Set dynamic PCR thresholds based on VIX
         if vix_value > 12:
@@ -728,3 +728,4 @@ def analyze():
 # === Main Function Call ===
 if __name__ == "__main__":
     analyze()
+
