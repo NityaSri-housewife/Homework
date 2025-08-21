@@ -536,7 +536,7 @@ def display_call_log_book():
             file_name="call_log_book.csv",
             mime="text/csv"
         )
-        def analyze():
+def analyze():
     """Main analysis function"""
     # Initialize Dhan client if not already done
     if not st.session_state.dhan_client:
