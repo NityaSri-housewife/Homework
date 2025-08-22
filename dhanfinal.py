@@ -1,316 +1,966 @@
-import os
-import io
-import time
-import json
-import math
-import smtplib
-import requests
-import numpy as np
-import pandas as pd
-from datetime import datetime, timedelta, timezone
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from streamlit_autorefresh import st_autorefresh
-
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
+import requests
+import pandas as pd
+import numpy as np
+from datetime import datetime, date, timedelta
+import math
+from scipy.stats import norm
+from pytz import timezone
+import plotly.graph_objects as go
+import io
+import json
+from supabase import create_client, Client
 
-st.set_page_config(page_title="NIFTY Option Chain Signals", layout="wide")
+# === Streamlit Config ===
+st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
+st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 minutes
 
-# -----------------------------
-# AUTO REFRESH EVERY 2 MINUTES
-# -----------------------------
-st_autorefresh(interval=120_000, key="datarefresh")  # 2 min refresh
+# Dhan API Configuration
+DHAN_BASE_URL = "https://api.dhan.co"
+DHAN_ACCESS_TOKEN = st.secrets["dhan"]["access_token"]  # Store in secrets.toml
+DHAN_CLIENT_ID = st.secrets["dhan"]["client_id"]        # Store in secrets.toml
 
-# -----------------------------
-# SECRETS
-# -----------------------------
-def get_secret(key, default=None):
+# Initialize Supabase client
+@st.cache_resource
+def init_supabase():
     try:
-        return st.secrets[key]
-    except Exception:
-        return os.environ.get(key, default)
+        supabase_url = st.secrets["supabase"]["url"]
+        supabase_key = st.secrets["supabase"]["key"]
+        return create_client(supabase_url, supabase_key)
+    except:
+        st.error("Supabase credentials not found. Please check your secrets.toml file.")
+        return None
 
-TZ_IST = timezone(timedelta(hours=5, minutes=30))
+supabase = init_supabase()
 
-DHAN_ACCESS_TOKEN = get_secret("DHAN_ACCESS_TOKEN")
-DHAN_CLIENT_ID = get_secret("DHAN_CLIENT_ID", "1000000001")
-UNDERLYING_SCRIP = int(get_secret("DHAN_UNDERLYING_SCRIP", 13))
-UNDERLYING_SEG = get_secret("DHAN_UNDERLYING_SEG", "IDX_I")
+# Initialize session state variables
+if 'price_data' not in st.session_state:
+    st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
+if 'trade_log' not in st.session_state:
+    st.session_state.trade_log = []
+if 'call_log_book' not in st.session_state:
+    st.session_state.call_log_book = []
+if 'export_data' not in st.session_state:
+    st.session_state.export_data = False
+if 'support_zone' not in st.session_state:
+    st.session_state.support_zone = (None, None)
+if 'resistance_zone' not in st.session_state:
+    st.session_state.resistance_zone = (None, None)
+if 'previous_oi_data' not in st.session_state:
+    st.session_state.previous_oi_data = None
+if 'historical_oi_data' not in st.session_state:
+    st.session_state.historical_oi_data = pd.DataFrame()
 
-INDEX_SECURITY_ID = str(get_secret("DHAN_INDEX_SECURITY_ID", "13"))
-INDEX_EXCHANGE_SEGMENT = get_secret("DHAN_INDEX_EXCHANGE_SEGMENT", "IDX_I")
-INDEX_INSTRUMENT = get_secret("DHAN_INDEX_INSTRUMENT", "INDEX")
+# Initialize PCR settings with VIX-based defaults
+if 'pcr_threshold_bull' not in st.session_state:
+    st.session_state.pcr_threshold_bull = 2.0
+if 'pcr_threshold_bear' not in st.session_state:
+    st.session_state.pcr_threshold_bear = 0.4
+if 'use_pcr_filter' not in st.session_state:
+    st.session_state.use_pcr_filter = True
+if 'pcr_history' not in st.session_state:
+    st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
 
-TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
-
-SUPABASE_URL = get_secret("SUPABASE_URL")
-SUPABASE_KEY = get_secret("SUPABASE_KEY")
-SUPABASE_TABLE_CHAIN = get_secret("SUPABASE_TABLE_CHAIN", "option_chain_history")
-SUPABASE_TABLE_CANDLES = get_secret("SUPABASE_TABLE_CANDLES", "underlying_candles_history")
-SUPABASE_TABLE_SIGNALS = get_secret("SUPABASE_TABLE_SIGNALS", "signals")
-
-GMAIL_SENDER = get_secret("GMAIL_SENDER")
-GMAIL_APP_PASSWORD = get_secret("GMAIL_APP_PASSWORD")
-GMAIL_RECIPIENT = get_secret("GMAIL_RECIPIENT")
-
-DHAN_BASE = "https://api.dhan.co/v2"
-
-HEADERS_DHAN_JSON = {
-    "accept": "application/json",
-    "content-type": "application/json",
-    "access-token": DHAN_ACCESS_TOKEN
-}
-if DHAN_CLIENT_ID:
-    HEADERS_DHAN_JSON["client-id"] = DHAN_CLIENT_ID
-
-def ist_now_str():
-    return datetime.now(TZ_IST).strftime("%Y-%m-%d %H:%M:%S")
-
-# -----------------------------
-# DHANHQ API
-# -----------------------------
-@st.cache_data(ttl=3)
-def get_expiry_list(underlying_scrip: int, seg: str):
-    url = f"{DHAN_BASE}/optionchain/expirylist"
-    payload = {"UnderlyingScrip": underlying_scrip, "UnderlyingSeg": seg}
-    r = requests.post(url, headers=HEADERS_DHAN_JSON, json=payload, timeout=15)
-    r.raise_for_status()
-    return r.json().get("data", [])
-
-@st.cache_data(ttl=3)
-def get_option_chain(underlying_scrip: int, seg: str, expiry: str):
-    url = f"{DHAN_BASE}/optionchain"
-    payload = {"UnderlyingScrip": underlying_scrip, "UnderlyingSeg": seg, "Expiry": expiry}
-    r = requests.post(url, headers=HEADERS_DHAN_JSON, json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json().get("data", {})
-
-@st.cache_data(ttl=60)
-def get_intraday_candles(security_id: str, exchange_segment: str, instrument: str,
-                         interval="5", lookback_minutes=360):
-    url = f"{DHAN_BASE}/charts/intraday"
-    end_dt = datetime.now(TZ_IST).replace(second=0, microsecond=0)
-    start_dt = end_dt - timedelta(minutes=lookback_minutes)
-    payload = {
-        "securityId": security_id,
-        "exchangeSegment": exchange_segment,
-        "instrument": instrument,
-        "interval": str(interval),
-        "oi": False,
-        "fromDate": start_dt.strftime("%Y-%m-%d %H:%M:%S"),
-        "toDate": end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+# === Dhan API Functions ===
+def get_dhan_headers():
+    """Return headers for Dhan API requests"""
+    return {
+        "access-token": DHAN_ACCESS_TOKEN,
+        "client-id": DHAN_CLIENT_ID,
+        "Content-Type": "application/json"
     }
-    r = requests.post(url, headers=HEADERS_DHAN_JSON, json=payload, timeout=20)
-    r.raise_for_status()
-    j = r.json()
-    df = pd.DataFrame({
-        "ts": [datetime.fromtimestamp(ts, tz=TZ_IST) for ts in j.get("timestamp", [])],
-        "open": j.get("open", []),
-        "high": j.get("high", []),
-        "low": j.get("low", []),
-        "close": j.get("close", []),
-        "volume": j.get("volume", []),
-    })
-    return df
 
-# -----------------------------
-# CALCULATIONS
-# -----------------------------
-def compute_pcr_df(oc_map: dict) -> pd.DataFrame:
-    rows = []
-    for strike, legs in oc_map.items():
-        try:
-            strike_f = float(strike)
-        except:
-            try: strike_f = float(strike.split(".")[0])
-            except: continue
-        ce = legs.get("ce", {}) or {}
-        pe = legs.get("pe", {}) or {}
-        rows.append({
-            "strike": strike_f,
-            "ce_ltp": ce.get("last_price"),
-            "pe_ltp": pe.get("last_price"),
-            "ce_oi": ce.get("oi"),
-            "pe_oi": pe.get("oi"),
-            "ce_iv": ce.get("implied_volatility"),
-            "pe_iv": pe.get("implied_volatility"),
-        })
-    df = pd.DataFrame(rows)
-    if df.empty: return df
-    df.sort_values("strike", inplace=True)
-    df["ce_oi"] = pd.to_numeric(df["ce_oi"], errors="coerce").fillna(0)
-    df["pe_oi"] = pd.to_numeric(df["pe_oi"], errors="coerce").fillna(0)
-    df["pcr"] = np.where(df["ce_oi"]>0, df["pe_oi"]/df["ce_oi"], np.nan)
-    # Bias: Bull if PE OI > CE OI, Bear if CE OI > PE OI, Neutral if approx equal
-    df["bias"] = np.where(df["pe_oi"] > df["ce_oi"]*1.05, "Bull",
-                   np.where(df["ce_oi"] > df["pe_oi"]*1.05, "Bear", "Neutral"))
-    return df
+def get_nifty_underlying_value():
+    """Get Nifty spot price using Dhan API"""
+    try:
+        # Get NIFTY 50 index value (Security ID for NIFTY 50 is 13 according to Dhan docs)
+        url = f"{DHAN_BASE_URL}/v2/marketfeed/ltp"
+        payload = {
+            "IDX_I": [13]  # NIFTY 50 index
+        }
+        
+        response = requests.post(url, headers=get_dhan_headers(), json=payload, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("status") == "success" and "data" in data:
+            return data["data"]["IDX_I"]["13"]["last_price"]
+        else:
+            st.error("Failed to get Nifty underlying value from Dhan API")
+            return None
+    except Exception as e:
+        st.error(f"Error getting Nifty underlying value: {e}")
+        return None
 
-def derive_dynamic_sr_from_pcr(pcr_df: pd.DataFrame, spot: float) -> dict:
-    if pcr_df.empty: return {"supports": [], "resistances": []}
-    df = pcr_df.copy()
-    below = df[df["strike"] <= spot].tail(5)
-    above = df[df["strike"] >= spot].head(5)
-    top_supports = below.sort_values("pcr", ascending=False).head(3)
-    top_resistances = above.sort_values("pcr", ascending=True).head(3)
-    def zone_width(row):
-        oi = (row["ce_oi"] + row["pe_oi"]) or 1
-        base = 0.0015 * spot
-        oi_term = 0.0005 * math.log10(max(oi, 10))
-        pcr_term = 0.0007 * abs((row["pcr"] or 1)-1.0)
-        return base + oi_term + pcr_term
-    supports = []
-    for _, r in top_supports.iterrows():
-        w = zone_width(r)
-        supports.append({"strike": r["strike"], "pcr": r["pcr"], "low": r["strike"]-w, "high": r["strike"]+w})
-    resistances = []
-    for _, r in top_resistances.iterrows():
-        w = zone_width(r)
-        resistances.append({"strike": r["strike"], "pcr": r["pcr"], "low": r["strike"]-w, "high": r["strike"]+w})
-    return {"supports": supports, "resistances": resistances}
+def get_vix_value():
+    """Get India VIX value using Dhan API"""
+    try:
+        # Get India VIX value (Security ID for India VIX is 21 according to Dhan docs)
+        url = f"{DHAN_BASE_URL}/v2/marketfeed/ltp"
+        payload = {
+            "IDX_I": [21]  # India VIX index
+        }
+        
+        response = requests.post(url, headers=get_dhan_headers(), json=payload, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("status") == "success" and "data" in data:
+            return data["data"]["IDX_I"]["21"]["last_price"]
+        else:
+            st.error("Failed to get VIX value from Dhan API")
+            return 11  # Default value
+    except Exception as e:
+        st.error(f"Error getting VIX value: {e}")
+        return 11  # Default value
 
-def rsi(series: pd.Series, period=7):
-    s = series.dropna().astype(float)
-    if len(s)<period+1: return pd.Series([np.nan]*len(series), index=series.index)
-    delta = s.diff()
-    up = np.where(delta>0, delta,0.0)
-    down = np.where(delta<0, -delta,0.0)
-    roll_up = pd.Series(up, index=s.index).ewm(alpha=1/period, adjust=False).mean()
-    roll_down = pd.Series(down, index=s.index).ewm(alpha=1/period, adjust=False).mean()
-    rs = roll_up/(roll_down+1e-9)
-    rsi_val = 100-(100/(1+rs))
-    out = pd.Series(np.nan, index=series.index)
-    out.loc[s.index] = rsi_val
-    return out
+def get_option_chain(underlying_scrip=13, underlying_seg="IDX_I", expiry_date=None):
+    """Get option chain data from Dhan API"""
+    try:
+        url = f"{DHAN_BASE_URL}/v2/optionchain"
+        
+        # If no expiry date provided, get the list of available expiries first
+        if expiry_date is None:
+            expiry_list_url = f"{DHAN_BASE_URL}/v2/optionchain/expirylist"
+            expiry_payload = {
+                "UnderlyingScrip": underlying_scrip,
+                "UnderlyingSeg": underlying_seg
+            }
+            
+            expiry_response = requests.post(expiry_list_url, headers=get_dhan_headers(), json=expiry_payload, timeout=10)
+            expiry_response.raise_for_status()
+            expiry_data = expiry_response.json()
+            
+            if expiry_data.get("status") == "success" and "data" in expiry_data and expiry_data["data"]:
+                expiry_date = expiry_data["data"][0]  # Use the first expiry
+            else:
+                st.error("Failed to get expiry dates from Dhan API")
+                return None
+        
+        # Get option chain for the selected expiry
+        payload = {
+            "UnderlyingScrip": underlying_scrip,
+            "UnderlyingSeg": underlying_seg,
+            "Expiry": expiry_date
+        }
+        
+        response = requests.post(url, headers=get_dhan_headers(), json=payload, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("status") == "success" and "data" in data:
+            return data["data"], expiry_date
+        else:
+            st.error("Failed to get option chain from Dhan API")
+            return None, None
+            
+    except Exception as e:
+        st.error(f"Error getting option chain: {e}")
+        return None, None
 
-def atr(df: pd.DataFrame, period=14):
-    h,l,c = df["high"].astype(float), df["low"].astype(float), df["close"].astype(float)
-    prev_c = c.shift(1)
-    tr = pd.concat([(h-l), (h-prev_c).abs(), (l-prev_c).abs()], axis=1).max(axis=1)
-    return tr.rolling(period,min_periods=1).mean()
+# === Supabase Functions ===
+def store_oi_price_data(price, oi, signal):
+    """Store OI and Price data in Supabase table"""
+    if supabase is None:
+        st.warning("Supabase not initialized - skipping data storage")
+        return False
+    
+    try:
+        data = {
+            "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
+            "price": float(price),
+            "oi": float(oi),
+            "signal": str(signal)
+        }
+        
+        response = supabase.table("oi_price_history").insert(data).execute()
+        if hasattr(response, 'data') and response.data:
+            st.success("✅ Data stored in Supabase successfully")
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error storing data in Supabase: {e}")
+        return False
 
-def detect_order_blocks(df: pd.DataFrame, lookback=50, vol_quantile=0.95, body_multiplier=1.2):
-    if len(df)<max(lookback,20): return None
-    work = df.copy().tail(lookback+1).reset_index(drop=True)
-    work["range"] = work["high"] - work["low"]
-    work["body"] = (work["close"]-work["open"]).abs()
-    work["bull"] = work["close"] > work["open"]
-    work["bear"] = work["close"] < work["open"]
-    _atr = atr(work, period=14)
-    vol_thr = work["volume"].quantile(vol_quantile)
-    last = work.iloc[-1]
-    last_atr = _atr.iloc[-1] if not _atr.empty else max(last["range"],1e-6)
-    bullish = last["bull"] and last["volume"]>=vol_thr and last["body"]>=body_multiplier*last_atr and (last["high"]-last["close"])<=0.25*last["range"]
-    bearish = last["bear"] and last["volume"]>=vol_thr and last["body"]>=body_multiplier*last_atr and (last["close"]-last["low"])<=0.25*last["range"]
-    if bullish: return {"type":"bullish","low":float(min(last["open"],last["close"])),"high":float(max(last["open"],last["close"])),"ts":str(last["ts"])}
-    if bearish: return {"type":"bearish","low":float(min(last["open"],last["close"])),"high":float(max(last["open"],last["close"])),"ts":str(last["ts"])}
-    return None
+def fetch_historical_oi_data(days=1):
+    """Fetch historical OI and Price data from Supabase"""
+    if supabase is None:
+        st.warning("Supabase not initialized - using empty historical data")
+        return pd.DataFrame()
+    
+    try:
+        # Get data from today and specified previous days
+        start_date = (datetime.now() - pd.Timedelta(days=days)).isoformat()
+        response = supabase.table("oi_price_history")\
+            .select("*")\
+            .gte("timestamp", start_date)\
+            .order("timestamp", desc=False)\
+            .execute()
+        
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            return df
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error fetching historical data: {e}")
+        return pd.DataFrame()
 
-def spot_in_any_zone(spot: float, zones: list) -> dict | None:
-    for z in zones:
-        if z["low"] <= spot <= z["high"]:
-            return z
-    return None
+def delete_old_data(days_to_keep=1):
+    """Delete data older than specified days"""
+    if supabase is None:
+        return False
+    
+    try:
+        # Delete data older than specified days
+        cutoff_date = (datetime.now() - pd.Timedelta(days=days_to_keep)).isoformat()
+        response = supabase.table("oi_price_history")\
+            .delete()\
+            .lt("timestamp", cutoff_date)\
+            .execute()
+        
+        if hasattr(response, 'data'):
+            st.info(f"🗑️ Deleted {len(response.data)} old records")
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error deleting old data: {e}")
+        return False
 
-# -----------------------------
-# SUPABASE
-# -----------------------------
-def supabase_insert(table: str, rows: list[dict]):
-    if not SUPABASE_URL or not SUPABASE_KEY: return None,"Supabase not configured"
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
-    }
-    r = requests.post(url, headers=headers, data=json.dumps(rows), timeout=20)
-    if r.status_code>=300: return None,f"Supabase insert error: {r.status_code} {r.text}"
-    return r.json(), None
+# === Telegram Config ===
+TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
+TELEGRAM_CHAT_ID = "5704496584"
 
-# -----------------------------
-# TELEGRAM & EMAIL
-# -----------------------------
-def telegram_send(msg: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return "Telegram not configured"
+def send_telegram_message(message):
+    """Send message via Telegram bot"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID,"text":msg,"parse_mode":"HTML"}
-    r = requests.post(url,data=payload,timeout=15)
-    if r.status_code!=200: return f"Telegram error: {r.status_code} {r.text}"
-    return "ok"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        response = requests.post(url, data=data)
+        if response.status_code != 200:
+            st.warning("⚠️ Telegram message failed.")
+    except Exception as e:
+        st.error(f"❌ Telegram error: {e}")
 
-def email_excel(subject:str,body:str,filename:str,bytes_data:bytes):
-    if not GMAIL_SENDER or not GMAIL_APP_PASSWORD or not GMAIL_RECIPIENT: return "Email not configured"
-    msg = MIMEMultipart()
-    msg["From"]=GMAIL_SENDER
-    msg["To"]=GMAIL_RECIPIENT
-    msg["Subject"]=subject
-    msg.attach(MIMEText(body,"plain"))
-    part = MIMEApplication(bytes_data, Name=filename)
-    part["Content-Disposition"] = f'attachment; filename="{filename}"'
-    msg.attach(part)
-    with smtplib.SMTP_SSL("smtp.gmail.com",465) as server:
-        server.login(GMAIL_SENDER,GMAIL_APP_PASSWORD)
-        server.send_message(msg)
-    return "ok"
+# === Option Analysis Functions (Unchanged) ===
+def calculate_greeks(option_type, S, K, T, r, sigma):
+    """Calculate option Greeks using Black-Scholes model"""
+    if T <= 0 or sigma <= 0 or S <= 0:
+        return [0, 0, 0, 0, 0]
+    
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        
+        if option_type == 'CE':
+            delta = norm.cdf(d1)
+            gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+            vega = S * norm.pdf(d1) * math.sqrt(T) / 100
+            theta = (-S * norm.pdf(d1) * sigma / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365
+            rho = K * T * math.exp(-r * T) * norm.cdf(d2) / 100
+        else:  # PE
+            delta = norm.cdf(d1) - 1
+            gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+            vega = S * norm.pdf(d1) * math.sqrt(T) / 100
+            theta = (-S * norm.pdf(d1) * sigma / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
+            rho = -K * T * math.exp(-r * T) * norm.cdf(-d2) / 100
+            
+        return [delta, gamma, vega, theta, rho]
+    except:
+        return [0, 0, 0, 0, 0]
 
-# -----------------------------
-# PIPELINE
-# -----------------------------
-def run_pipeline(expiry: str, interval="5", history_minutes=360):
-    oc_data = get_option_chain(UNDERLYING_SCRIP,UNDERLYING_SEG,expiry)
-    if not oc_data: raise RuntimeError("Empty option chain data")
-    underlying_ltp = oc_data.get("last_price")
-    oc_map = oc_data.get("oc",{})
-    pcr_df = compute_pcr_df(oc_map)
-    zones = derive_dynamic_sr_from_pcr(pcr_df, underlying_ltp)
-    candles = get_intraday_candles(INDEX_SECURITY_ID, INDEX_EXCHANGE_SEGMENT, INDEX_INSTRUMENT, interval, history_minutes)
-    if candles.empty: raise RuntimeError("No intraday candles")
-    candles["rsi7"]=rsi(candles["close"],7)
-    ob = detect_order_blocks(candles,lookback=min(100,len(candles)))
-
-    # Support/Resistance/Neutral per strike
-    def sr_label(strike):
-        for s in zones["supports"]:
-            if s["low"] <= strike <= s["high"]: return "Support"
-        for r in zones["resistances"]:
-            if r["low"] <= strike <= r["high"]: return "Resistance"
+def final_verdict(score):
+    """Determine final verdict based on bias score"""
+    if score > 5:
+        return "Strong Bullish"
+    elif score > 2:
+        return "Bullish"
+    elif score < -5:
+        return "Strong Bearish"
+    elif score < -2:
+        return "Bearish"
+    else:
         return "Neutral"
-    if not pcr_df.empty: pcr_df["sr_label"]=pcr_df["strike"].apply(sr_label)
 
-    # Signal logic
-    last_rsi=float(candles["rsi7"].iloc[-1]) if not candles["rsi7"].empty else np.nan
-    support_hit=spot_in_any_zone(underlying_ltp,zones["supports"])
-    resistance_hit=spot_in_any_zone(underlying_ltp,zones["resistances"])
-    signal=None
-    reason=[]
-    if ob and support_hit and ob["type"]=="bullish" and last_rsi<30:
-        signal="LONG"
-        reason=[f"Spot {underlying_ltp:.2f} in Support Zone {support_hit['low']:.2f}-{support_hit['high']:.2f}",
-                f"Bullish Order Block @ {ob['low']:.2f}-{ob['high']:.2f} [{ob['ts']}]",
-                f"RSI7={last_rsi:.2f} (<30)"]
-    elif ob and resistance_hit and ob["type"]=="bearish" and last_rsi>70:
-        signal="SHORT"
-        reason=[f"Spot {underlying_ltp:.2f} in Resistance Zone {resistance_hit['low']:.2f}-{resistance_hit['high']:.2f}",
-                f"Bearish Order Block @ {ob['low']:.2f}-{ob['high']:.2f} [{ob['ts']}]",
-                f"RSI7={last_rsi:.2f} (>70)"]
+def delta_volume_bias(price_diff, volume_diff, oi_diff):
+    """Determine bias based on delta, volume, and OI"""
+    if price_diff > 0 and volume_diff > 0 and oi_diff > 0:
+        return "Bullish"
+    elif price_diff < 0 and volume_diff > 0 and oi_diff > 0:
+        return "Bearish"
+    elif price_diff < 0 and volume_diff < 0 and oi_diff < 0:
+        return "Bullish Covering"
+    elif price_diff > 0 and volume_diff < 0 and oi_diff < 0:
+        return "Bearish Covering"
+    else:
+        return "Neutral"
 
-    # Supabase logging
-    now_ist=ist_now_str()
-    chain_rows=[]
-    if not pcr_df.empty:
-        for _,r in pcr_df.iterrows():
-            chain_rows.append({
-                "ts":now_ist,"expiry":expiry,"spot":underlying_ltp,
-                "strike":float(r["strike"]),"ce_oi":float(r["ce_oi"]),"pe_oi":float(r["pe_oi"]),
-                "pcr":float(r["pcr"]) if not pd.isna(r["pcr"]) else None,
-                "ce_ltp":float(r["ce_ltp"]) if not pd.isna(r["ce_ltp"]) else None,
-                "pe_ltp":float(r["pe_ltp"]) if not pd.isna(r["pe_ltp"]) else None,
-                "ce_iv":float(r["ce_iv"]) if not pd.isna(r["ce_iv"]) else None,
-                "pe_iv":float(r["pe_iv"]) if not pd.isna(r["pe_iv"]) else None,
-                "bias":r["bias"],"sr_label":r["sr_label"]
+def determine_level(row):
+    """Determine support/resistance level based on OI"""
+    ce_oi = row.get('openInterest_CE', 0)
+    pe_oi = row.get('openInterest_PE', 0)
+    
+    if ce_oi > pe_oi * 1.5:
+        return "Resistance"
+    elif pe_oi > ce_oi * 1.5:
+        return "Support"
+    else:
+        return "Neutral"
+
+def is_in_zone(price, zone):
+    """Check if price is in support/resistance zone"""
+    if zone[0] is None or zone[1] is None:
+        return False
+    return zone[0] <= price <= zone[1]
+
+def get_support_resistance_zones(df, underlying):
+    """Identify support and resistance zones based on OI"""
+    df_support = df[df['Level'] == 'Support'].sort_values('strikePrice')
+    df_resistance = df[df['Level'] == 'Resistance'].sort_values('strikePrice')
+    
+    # Find closest support and resistance levels
+    support_levels = df_support['strikePrice'].values
+    resistance_levels = df_resistance['strikePrice'].values
+    
+    if len(support_levels) > 0:
+        closest_support = min(support_levels, key=lambda x: abs(x - underlying))
+        support_zone = (closest_support - 50, closest_support + 50)
+    else:
+        support_zone = (None, None)
+    
+    if len(resistance_levels) > 0:
+        closest_resistance = min(resistance_levels, key=lambda x: abs(x - underlying))
+        resistance_zone = (closest_resistance - 50, closest_resistance + 50)
+    else:
+        resistance_zone = (None, None)
+    
+    return support_zone, resistance_zone
+
+def classify_oi_price_signal(current_price, previous_price, current_oi, previous_oi):
+    """Classify OI + Price signal"""
+    price_change = current_price - previous_price
+    oi_change = current_oi - previous_oi
+    
+    if price_change > 0 and oi_change > 0:
+        return "Long Build-up"
+    elif price_change < 0 and oi_change > 0:
+        return "Short Build-up"
+    elif price_change < 0 and oi_change < 0:
+        return "Long Covering"
+    elif price_change > 0 and oi_change < 0:
+        return "Short Covering"
+    else:
+        return "Neutral"
+
+def display_enhanced_trade_log():
+    """Display enhanced trade log with filtering options"""
+    if st.session_state.trade_log:
+        df_log = pd.DataFrame(st.session_state.trade_log)
+        
+        # Add filtering options
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_signal = st.selectbox(
+                "Filter by Signal",
+                options=["All"] + list(df_log['Signal'].unique())
+            )
+        with col2:
+            filter_strike = st.selectbox(
+                "Filter by Strike",
+                options=["All"] + sorted(df_log['Strike'].unique().tolist())
+            )
+        
+        # Apply filters
+        if filter_signal != "All":
+            df_log = df_log[df_log['Signal'] == filter_signal]
+        if filter_strike != "All":
+            df_log = df_log[df_log['Strike'] == filter_strike]
+        
+        st.dataframe(df_log, use_container_width=True)
+
+def create_export_data(df_summary, underlying):
+    """Create data for export"""
+    export_data = {
+        "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
+        "underlying_price": underlying,
+        "pcr_threshold_bull": st.session_state.pcr_threshold_bull,
+        "pcr_threshold_bear": st.session_state.pcr_threshold_bear,
+        "analysis_data": df_summary.to_dict('records')
+    }
+    return export_data
+
+def handle_export_data(df_summary, underlying):
+    """Handle data export functionality"""
+    if st.session_state.export_data:
+        export_data = create_export_data(df_summary, underlying)
+        
+        # Convert to JSON
+        json_data = json.dumps(export_data, indent=2)
+        
+        # Create download button
+        st.download_button(
+            label="Download JSON Data",
+            data=json_data,
+            file_name=f"options_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
+        
+        # Create Excel file
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+            df_summary.to_excel(writer, sheet_name='Option Analysis', index=False)
+            
+            # Add summary sheet
+            summary_data = {
+                'Metric': ['Timestamp', 'Underlying Price', 'Bullish PCR Threshold', 'Bearish PCR Threshold'],
+                'Value': [
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    underlying,
+                    st.session_state.pcr_threshold_bull,
+                    st.session_state.pcr_threshold_bear
+                ]
+            }
+            pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+        
+        excel_buffer.seek(0)
+        
+        st.download_button(
+            label="Download Excel Report",
+            data=excel_buffer,
+            file_name=f"options_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        if st.button("Done"):
+            st.session_state.export_data = False
+            st.rerun()
+
+def plot_price_with_sr():
+    """Plot price action with support/resistance zones"""
+    if len(st.session_state.price_data) > 1:
+        fig = go.Figure()
+        
+        # Add price line
+        fig.add_trace(go.Scatter(
+            x=st.session_state.price_data['Time'],
+            y=st.session_state.price_data['Spot'],
+            mode='lines+markers',
+            name='Nifty Spot',
+            line=dict(color='blue', width=2)
+        ))
+        
+        # Add support and resistance zones if available
+        support_zone = st.session_state.support_zone
+        resistance_zone = st.session_state.resistance_zone
+        
+        if support_zone[0] is not None and support_zone[1] is not None:
+            fig.add_hrect(
+                y0=support_zone[0], y1=support_zone[1],
+                fillcolor="green", opacity=0.2,
+                line_width=0, name="Support Zone"
+            )
+        
+        if resistance_zone[0] is not None and resistance_zone[1] is not None:
+            fig.add_hrect(
+                y0=resistance_zone[0], y1=resistance_zone[1],
+                fillcolor="red", opacity=0.2,
+                line_width=0, name="Resistance Zone"
+            )
+        
+        fig.update_layout(
+            title="Nifty Price Action with Support/Resistance Zones",
+            xaxis_title="Time",
+            yaxis_title="Price",
+            template="plotly_white"
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+def auto_update_call_log(underlying):
+    """Auto update call log with current price"""
+    if st.session_state.call_log_book:
+        for i, log in enumerate(st.session_state.call_log_book):
+            if log['Status'] == 'Active':
+                strike = log['Strike']
+                option_type = log['Type']
+                entry_price = log['Entry Price']
+                
+                # Calculate current P&L
+                if option_type == 'CE':
+                    pnl = (underlying - strike) - entry_price if underlying > strike else -entry_price
+                else:  # PE
+                    pnl = (strike - underlying) - entry_price if underlying < strike else -entry_price
+                
+                st.session_state.call_log_book[i]['Current P&L'] = pnl
+                st.session_state.call_log_book[i]['Underlying'] = underlying
+
+def display_call_log_book():
+    """Display call log book"""
+    st.markdown("### 📋 Call Log Book")
+    
+    if st.button("Add New Trade"):
+        st.session_state.call_log_book.append({
+            'Timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Strike': 0,
+            'Type': 'CE',
+            'Entry Price': 0,
+            'Quantity': 1,
+            'Status': 'Active',
+            'Current P&L': 0,
+            'Underlying': 0
+        })
+    
+    if st.session_state.call_log_book:
+        df_log = pd.DataFrame(st.session_state.call_log_book)
+        edited_df = st.data_editor(
+            df_log,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "Timestamp": st.column_config.TextColumn("Timestamp", disabled=True),
+                "Strike": st.column_config.NumberColumn("Strike", min_value=0),
+                "Type": st.column_config.SelectboxColumn("Type", options=['CE', 'PE']),
+                "Entry Price": st.column_config.NumberColumn("Entry Price", min_value=0.0, format="%.2f"),
+                "Quantity": st.column_config.NumberColumn("Quantity", min_value=1),
+                "Status": st.column_config.SelectboxColumn("Status", options=['Active', 'Closed']),
+                "Current P&L": st.column_config.NumberColumn("Current P&L", format="%.2f", disabled=True),
+                "Underlying": st.column_config.NumberColumn("Underlying", format="%.2f", disabled=True)
+            }
+        )
+        
+        # Update session state with edited data
+        st.session_state.call_log_book = edited_df.to_dict('records')
+        
+        # Calculate total P&L
+        total_pnl = sum(log['Current P&L'] * log['Quantity'] for log in st.session_state.call_log_book if log['Status'] == 'Active')
+        st.metric("Total Active P&L", f"₹{total_pnl:,.2f}")
+
+def analyze():
+    """Main analysis function"""
+    st.title("Nifty Options Analyzer with OI + Price Signals")
+    
+    if 'trade_log' not in st.session_state:
+        st.session_state.trade_log = []
+    
+    try:
+        now = datetime.now(timezone("Asia/Kolkata"))
+        current_day = now.weekday()
+        current_time = now.time()
+        market_start = datetime.strptime("09:00", "%H:%M").time()
+        market_end = datetime.strptime("18:40", "%H:%M").time()
+
+        # Check market hours
+        if current_day >= 5 or not (market_start <= current_time <= market_end):
+            st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
+            return
+
+        # Fetch historical data from Supabase
+        st.session_state.historical_oi_data = fetch_historical_oi_data(days=1)
+        
+        # Delete old data at the start of each day (keep only 1 day data)
+        if current_time.hour == 9 and current_time.minute < 5:
+            delete_old_data(days_to_keep=1)
+
+        # Get underlying value and VIX from Dhan API
+        underlying = get_nifty_underlying_value()
+        if underlying is None:
+            st.error("Failed to get Nifty underlying value")
+            return
+            
+        vix_value = get_vix_value()
+
+        # Set dynamic PCR thresholds based on VIX
+        if vix_value > 12:
+            st.session_state.pcr_threshold_bull = 2.0
+            st.session_state.pcr_threshold_bear = 0.4
+            volatility_status = "High Volatility"
+        else:
+            st.session_state.pcr_threshold_bull = 1.2
+            st.session_state.pcr_threshold_bear = 0.7
+            volatility_status = "Low Volatility"
+
+        # Get option chain data from Dhan API
+        option_chain_data, expiry = get_option_chain()
+        if option_chain_data is None:
+            st.error("Failed to get option chain data")
+            return
+
+        # Display market info
+        st.markdown(f"### 📍 Spot Price: {underlying}")
+        st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status}) | PCR Thresholds: Bull >{st.session_state.pcr_threshold_bull} | Bear <{st.session_state.pcr_threshold_bear}")
+
+        # Store current data in Supabase
+        total_oi = option_chain_data.get('oi', {}).get('total', 0)  # Adjust based on actual response structure
+        store_oi_price_data(underlying, total_oi, "Market_Data")
+
+        # Process option chain data
+        # Extract calls and puts from Dhan API response
+        oc_data = option_chain_data.get('oc', {})
+        calls, puts = [], []
+        
+        for strike_str, strike_data in oc_data.items():
+            try:
+                strike_price = float(strike_str)
+                ce_data = strike_data.get('ce', {})
+                pe_data = strike_data.get('pe', {})
+                
+                if ce_data:
+                    ce_data['strikePrice'] = strike_price
+                    calls.append(ce_data)
+                
+                if pe_data:
+                    pe_data['strikePrice'] = strike_price
+                    puts.append(pe_data)
+            except ValueError:
+                continue
+        
+        # Convert to DataFrames
+        df_ce = pd.DataFrame(calls)
+        df_pe = pd.DataFrame(puts)
+        
+        if df_ce.empty or df_pe.empty:
+            st.error("❌ No option data available")
+            return
+            
+        # Merge calls and puts
+        df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
+
+        # Filter strikes around ATM
+        atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+        df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
+        df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
+        
+        # Calculate T (time to expiry)
+        expiry_date = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone("Asia/Kolkata"))
+        today = datetime.now(timezone("Asia/Kolkata"))
+        T = max((expiry_date - today).days, 1) / 365
+        r = 0.06  # Risk-free rate
+
+        # Calculate Greeks for each option
+        for idx, row in df.iterrows():
+            strike = row['strikePrice']
+            
+            # Calculate Greeks for CE
+            if pd.notna(row.get('impliedVolatility_CE')):
+                iv_ce = row['impliedVolatility_CE'] / 100
+                greeks_ce = calculate_greeks('CE', underlying, strike, T, r, iv_ce)
+                df.at[idx, 'Delta_CE'] = greeks_ce[0]
+                df.at[idx, 'Gamma_CE'] = greeks_ce[1]
+                df.at[idx, 'Vega_CE'] = greeks_ce[2]
+                df.at[idx, 'Theta_CE'] = greeks_ce[3]
+                df.at[idx, 'Rho_CE'] = greeks_ce[4]
+            
+            # Calculate Greeks for PE
+            if pd.notna(row.get('impliedVolatility_PE')):
+                iv_pe = row['impliedVolatility_PE'] / 100
+                greeks_pe = calculate_greeks('PE', underlying, strike, T, r, iv_pe)
+                df.at[idx, 'Delta_PE'] = greeks_pe[0]
+                df.at[idx, 'Gamma_PE'] = greeks_pe[1]
+                df.at[idx, 'Vega_PE'] = greeks_pe[2]
+                df.at[idx, 'Theta_PE'] = greeks_pe[3]
+                df.at[idx, 'Rho_PE'] = greeks_pe[4]
+        
+        df['Level'] = df.apply(determine_level, axis=1)
+
+        # === OI + Price Signal Classification ===
+        current_oi_data = df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 'lastPrice_CE', 'lastPrice_PE']].copy()
+        
+        # Initialize Signal columns
+        df['Signal_CE'] = "Neutral"
+        df['Signal_PE'] = "Neutral"
+        
+        # Check if we have historical data to compare with
+        if not st.session_state.historical_oi_data.empty:
+            # Use historical data for comparison
+            for index, row in df.iterrows():
+                strike = row['strikePrice']
+                
+                # For CE (Call options)
+                try:
+                    current_price_ce = row['lastPrice_CE']
+                    current_oi_ce = row['openInterest_CE']
+                    
+                    # Use the most recent historical data point
+                    latest_historical = st.session_state.historical_oi_data.iloc[-1]
+                    
+                    df.at[index, 'Signal_CE'] = classify_oi_price_signal(
+                        current_price_ce, latest_historical.get('price', 0), 
+                        current_oi_ce, latest_historical.get('oi', 0)
+                    )
+                except:
+                    df.at[index, 'Signal_CE'] = "Neutral"
+                
+                # For PE (Put options)
+                try:
+                    current_price_pe = row['lastPrice_PE']
+                    current_oi_pe = row['openInterest_PE']
+                    
+                    df.at[index, 'Signal_PE'] = classify_oi_price_signal(
+                        current_price_pe, latest_historical.get('price', 0), 
+                        current_oi_pe, latest_historical.get('oi', 0)
+                    )
+                except:
+                    df.at[index, 'Signal_PE'] = "Neutral"
+        
+        # Store current data for next comparison
+        st.session_state.previous_oi_data = current_oi_data
+        
+        # Calculate PCR
+        df['PCR'] = (df['openInterest_PE']) / (df['openInterest_CE'])
+        df['PCR'] = np.where(df['openInterest_CE'] == 0, 0, df['PCR'])
+        df['PCR'] = df['PCR'].round(2)
+        df['PCR_Signal'] = np.where(
+            df['PCR'] > st.session_state.pcr_threshold_bull,
+            "Bullish",
+            np.where(
+                df['PCR'] < st.session_state.pcr_threshold_bear,
+                "Bearish",
+                "Neutral"
+            )
+        )
+
+        # Calculate bias scores
+        weights = {
+            'ChgOI_Bias': 1.5,
+            'Volume_Bias': 1.0,
+            'Gamma_Bias': 1.2,
+            'AskQty_Bias': 0.8,
+            'BidQty_Bias': 0.8,
+            'IV_Bias': 1.0,
+            'DVP_Bias': 1.5
+        }
+
+        bias_results, total_score = [], 0
+        for _, row in df.iterrows():
+            if abs(row['strikePrice'] - atm_strike) > 100:
+                continue
+
+            score = 0
+            row_data = {
+                "Strike": row['strikePrice'],
+                "Zone": row['Zone'],
+                "Level": row['Level'],
+                "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
+                "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
+                "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) < row.get('Gamma_PE', 0) else "Bearish",
+                "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+                "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
+                "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "Bearish",
+                "DVP_Bias": delta_volume_bias(
+                    row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
+                    row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
+                    row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
+                ),
+                "Signal_CE": row['Signal_CE'],
+                "Signal_PE": row['Signal_PE'],
+                "PCR": row['PCR'],
+                "PCR_Signal": row['PCR_Signal']
+            }
+
+            for k in row_data:
+                if "_Bias" in k:
+                    bias = row_data[k]
+                    score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
+
+            row_data["BiasScore"] = score
+            row_data["Verdict"] = final_verdict(score)
+            total_score += score
+            bias_results.append(row_data)
+
+        df_summary = pd.DataFrame(bias_results)
+        
+        # Record PCR history
+        for _, row in df_summary.iterrows():
+            new_pcr_data = pd.DataFrame({
+                "Time": [now.strftime("%H:%M:%S")],
+                "Strike": [row['Strike']],
+                "PCR": [row['PCR']],
+                "Signal": [row['PCR_Signal']],
+                "VIX": [vix_value]
             })
-    if chain_rows: _,err=supabase_insert(SUPABASE_TABLE_CHAIN,chain_rows); 
-    if err: st.warning(err
+            st.session_state.pcr_history = pd.concat([st.session_state.pcr_history, new_pcr_data])
+
+        atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
+        market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
+        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
+
+        # Store zones in session state
+        st.session_state.support_zone = support_zone
+        st.session_state.resistance_zone = resistance_zone
+
+        # Update price history
+        current_time_str = now.strftime("%H:%M:%S")
+        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
+        st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
+
+        # Format support/resistance strings
+        support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) and None not in support_zone else "N/A"
+        resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) and None not in resistance_zone else "N/A"
+
+        # === Main Display ===
+        st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
+        st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
+        st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
+        
+        # Plot price action
+        plot_price_with_sr()
+
+        # Display Supabase status
+        st.sidebar.markdown("### 📦 Supabase Status")
+        st.sidebar.info(f"Historical records: {len(st.session_state.historical_oi_data)}")
+        if st.sidebar.button("Refresh Historical Data"):
+            st.session_state.historical_oi_data = fetch_historical_oi_data()
+            st.rerun()
+
+        # Option Chain Summary with OI + Price Signals
+        with st.expander("📊 Option Chain Summary with OI + Price Signals", expanded=True):
+            st.info(f"""
+            ℹ️ **PCR Interpretation** (VIX: {vix_value}):
+            - >{st.session_state.pcr_threshold_bull} = Bullish
+            - <{st.session_state.pcr_threshold_bear} = Bearish
+            - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
+            
+            ℹ️ **OI + Price Signal Interpretation**:
+            - 🟢 **Long Build-up**: Price ↑ + OI ↑ (Bullish)
+            - 🔴 **Short Build-up**: Price ↓ + OI ↑ (Bearish)  
+            - 🟡 **Long Covering**: Price ↓ + OI ↓ (Bearish unwinding)
+            - 🔵 **Short Covering**: Price ↑ + OI ↓ (Bullish unwinding)
+            - ⚪ **Neutral**: No significant movement
+            """)
+            
+            def color_pcr(val):
+                if val > st.session_state.pcr_threshold_bull:
+                    return 'background-color: #90EE90; color: black'
+                elif val < st.session_state.pcr_threshold_bear:
+                    return 'background-color: #FFB6C1; color: black'
+                else:
+                    return 'background-color: #FFFFE0; color: black'
+            
+            def color_signal(val):
+                if val == "Long Build-up":
+                    return 'background-color: #90EE90; color: black'
+                elif val == "Short Build-up":
+                    return 'background-color: #FFB6C1; color: black'
+                elif val == "Long Covering":
+                    return 'background-color: #FFD700; color: black'
+                elif val == "Short Covering":
+                    return 'background-color: #87CEFA; color: black'
+                else:
+                    return 'background-color: #F5F5F5; color: black'
+
+            styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(
+                color_signal, subset=['Signal_CE', 'Signal_PE']
+            )
+            
+            st.dataframe(styled_df, use_container_width=True, height=400)
+        
+        # Trade Log
+        if st.session_state.trade_log:
+            st.markdown("### 📜 Trade Log")
+            st.dataframe(pd.DataFrame(st.session_state.trade_log))
+
+        # === Enhanced Features Section ===
+        st.markdown("---")
+        st.markdown("## 📈 Enhanced Features")
+        
+        # PCR Configuration
+        st.markdown("### 🧮 PCR Configuration")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.session_state.pcr_threshold_bull = st.number_input(
+                "Bullish PCR Threshold (>)", 
+                min_value=1.0, max_value=5.0, 
+                value=st.session_state.pcr_threshold_bull, 
+                step=0.1
+            )
+        with col2:
+            st.session_state.pcr_threshold_bear = st.number_input(
+                "Bearish PCR Threshold (<)", 
+                min_value=0.1, max_value=1.0, 
+                value=st.session_state.pcr_threshold_bear, 
+                step=0.1
+            )
+        with col3:
+            st.session_state.use_pcr_filter = st.checkbox(
+                "Enable PCR Filtering", 
+                value=st.session_state.use_pcr_filter
+            )
+        
+        # PCR History
+        with st.expander("📈 PCR History"):
+            if not st.session_state.pcr_history.empty:
+                pcr_pivot = st.session_state.pcr_history.pivot_table(
+                    index='Time', 
+                    columns='Strike', 
+                    values='PCR',
+                    aggfunc='last'
+                )
+                st.line_chart(pcr_pivot)
+                st.dataframe(st.session_state.pcr_history)
+            else:
+                st.info("No PCR history recorded yet")
+        
+        # OI + Price History
+        with st.expander("📊 OI + Price History"):
+            if not st.session_state.historical_oi_data.empty:
+                st.dataframe(st.session_state.historical_oi_data)
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=st.session_state.historical_oi_data['timestamp'], 
+                    y=st.session_state.historical_oi_data['price'], 
+                    mode='lines+markers', 
+                    name='Price',
+                    line=dict(color='blue', width=2)
+                ))
+                fig.add_trace(go.Scatter(
+                    x=st.session_state.historical_oi_data['timestamp'], 
+                    y=st.session_state.historical_oi_data['oi'], 
+                    mode='lines+markers', 
+                    name='OI',
+                    line=dict(color='green', width=2),
+                    yaxis='y2'
+                ))
+                fig.update_layout(
+                    title="OI + Price History",
+                    xaxis_title="Time",
+                    yaxis_title="Price",
+                    yaxis2=dict(title="OI", overlaying='y', side='right'),
+                    template="plotly_white"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No OI + Price history recorded yet")
+        
+        # Enhanced Trade Log
+        display_enhanced_trade_log()
+        
+        # Export functionality
+        st.markdown("---")
+        st.markdown("### 📥 Data Export")
+        if st.button("Prepare Excel Export"):
+            st.session_state.export_data = True
+        handle_export_data(df_summary, underlying)
+        
+        # Call Log Book
+        st.markdown("---")
+        display_call_log_book()
+        
+        # Auto update call log with current price
+        auto_update_call_log(underlying)
+
+    except json.JSONDecodeError as e:
+        st.error("❌ Failed to decode JSON response from Dhan API. The market might be closed or the API is unavailable.")
+        send_telegram_message("❌ Dhan API JSON decode error - Market may be closed")
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Network error: {e}")
+        send_telegram_message(f"❌ Network error: {str(e)}")
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {e}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
+        send_telegram_message(f"❌ Unexpected error: {str(e)}")
+
+# === Main Function Call ===
+if __name__ == "__main__":
+    analyze()
