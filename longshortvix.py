@@ -13,7 +13,7 @@ import json
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
-st_autorefresh(interval=120000, key="datarefresh")
+st_autorefresh(interval=120000, key="datarefresh")  # Refresh every 2 minutes
 
 # Initialize session state variables
 if 'price_data' not in st.session_state:
@@ -31,7 +31,7 @@ if 'resistance_zone' not in st.session_state:
 if 'previous_oi_data' not in st.session_state:
     st.session_state.previous_oi_data = None
 
-# Initialize PCR settings
+# Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
     st.session_state.pcr_threshold_bull = 2.0
 if 'pcr_threshold_bear' not in st.session_state:
@@ -119,6 +119,16 @@ def get_support_resistance_zones(df, spot):
 def classify_oi_price_signal(current_price, previous_price, current_oi, previous_oi, threshold=0.001):
     """
     Classify OI + Price action signal based on the given logic
+    
+    Parameters:
+    current_price: Current price value
+    previous_price: Previous price value
+    current_oi: Current open interest value
+    previous_oi: Previous open interest value
+    threshold: Minimum percentage change to consider as movement (default 0.1%)
+    
+    Returns:
+    Signal classification string
     """
     if (previous_price == 0 or previous_oi == 0 or 
         pd.isna(previous_price) or pd.isna(previous_oi) or
@@ -294,32 +304,85 @@ def plot_price_with_sr():
     )
     st.plotly_chart(fig, use_container_width=True)
 
+def auto_update_call_log(current_price):
+    """Automatically update call log status"""
+    for call in st.session_state.call_log_book:
+        if call["Status"] != "Active":
+            continue
+        
+        if call["Type"] == "CE":
+            if current_price >= max(call["Targets"].values()):
+                call["Status"] = "Hit Target"
+                call["Hit_Target"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+            elif current_price <= call["Stoploss"]:
+                call["Status"] = "Hit Stoploss"
+                call["Hit_Stoploss"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+        elif call["Type"] == "PE":
+            if current_price <= min(call["Targets"].values()):
+                call["Status"] = "Hit Target"
+                call["Hit_Target"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+            elif current_price >= call["Stoploss"]:
+                call["Status"] = "Hit Stoploss"
+                call["Hit_Stoploss"] = True
+                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+                call["Exit_Price"] = current_price
+
+def display_call_log_book():
+    """Display the call log book"""
+    st.markdown("### 📚 Call Log Book")
+    if not st.session_state.call_log_book:
+        st.info("No calls have been made yet.")
+        return
+    
+    df_log = pd.DataFrame(st.session_state.call_log_book)
+    st.dataframe(df_log, use_container_width=True)
+    
+    if st.button("Download Call Log Book as CSV"):
+        st.download_button(
+            label="Download CSV",
+            data=df_log.to_csv(index=False).encode(),
+            file_name="call_log_book.csv",
+            mime="text/csv"
+        )
+
 def analyze():
     """Main analysis function"""
+    st.title("Nifty Options Analyzer with OI + Price Signals")
+    
+    if 'trade_log' not in st.session_state:
+        st.session_state.trade_log = []
+    
     try:
-        st.title("Nifty Options Analyzer")
-        
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("18:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
+        # Check market hours
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
             return
 
+        # Initialize session
         headers = {"User-Agent": "Mozilla/5.0"}
         session = requests.Session()
         session.headers.update(headers)
         
+        # First request to establish session
         try:
             session.get("https://www.nseindia.com", timeout=5)
         except requests.exceptions.RequestException as e:
             st.error(f"❌ Failed to establish NSE session: {e}")
             return
 
-        # Get VIX data
+        # Get VIX data first
         vix_url = "https://www.nseindia.com/api/equity-stockIndices?index=INDIA%20VIX"
         try:
             vix_response = session.get(vix_url, timeout=10)
@@ -328,9 +391,9 @@ def analyze():
             vix_value = vix_data['data'][0]['lastPrice']
         except Exception as e:
             st.error(f"❌ Failed to get VIX data: {e}")
-            vix_value = 11
+            vix_value = 11  # Default value if API fails
 
-        # Set PCR thresholds
+        # Set dynamic PCR thresholds based on VIX
         if vix_value > 12:
             st.session_state.pcr_threshold_bull = 2.0
             st.session_state.pcr_threshold_bear = 0.4
@@ -350,6 +413,7 @@ def analyze():
             st.error(f"❌ Failed to get option chain data: {e}")
             return
 
+        # Check if data is empty
         if not data or 'records' not in data:
             st.error("❌ Empty or invalid response from NSE API")
             return
@@ -358,18 +422,31 @@ def analyze():
         expiry = data['records']['expiryDates'][0]
         underlying = data['records']['underlyingValue']
 
+        # Display market info
         st.markdown(f"### 📍 Spot Price: {underlying}")
-        st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status})")
+        st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status}) | PCR Thresholds: Bull >{st.session_state.pcr_threshold_bull} | Bear <{st.session_state.pcr_threshold_bear}")
+
+        # Non-expiry day processing
+        expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
+        today = datetime.now(timezone("Asia/Kolkata"))
+        T = max((expiry_date - today).days, 1) / 365
+        r = 0.06
 
         # Process option chain data
         calls, puts = [], []
         for item in records:
             if 'CE' in item and item['CE']['expiryDate'] == expiry:
                 ce = item['CE']
+                if ce['impliedVolatility'] > 0:
+                    greeks = calculate_greeks('CE', underlying, ce['strikePrice'], T, r, ce['impliedVolatility'] / 100)
+                    ce.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
                 calls.append(ce)
 
             if 'PE' in item and item['PE']['expiryDate'] == expiry:
                 pe = item['PE']
+                if pe['impliedVolatility'] > 0:
+                    greeks = calculate_greeks('PE', underlying, pe['strikePrice'], T, r, pe['impliedVolatility'] / 100)
+                    pe.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
                 puts.append(pe)
 
         df_ce = pd.DataFrame(calls)
@@ -446,82 +523,208 @@ def analyze():
             )
         )
 
-        # Create summary DataFrame
-        summary_data = []
+        # Calculate bias scores
+        weights = {
+            'ChgOI_Bias': 1.5,
+            'Volume_Bias': 1.0,
+            'Gamma_Bias': 1.2,
+            'AskQty_Bias': 0.8,
+            'BidQty_Bias': 0.8,
+            'IV_Bias': 1.0,
+            'DVP_Bias': 1.5
+        }
+
+        bias_results, total_score = [], 0
         for _, row in df.iterrows():
             if abs(row['strikePrice'] - atm_strike) > 100:
                 continue
 
-            summary_data.append({
+            score = 0
+            row_data = {
                 "Strike": row['strikePrice'],
                 "Zone": row['Zone'],
                 "Level": row['Level'],
+                "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
+                "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
+                "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) < row.get('Gamma_PE', 0) else "Bearish",
+                "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+                "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
+                "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "Bearish",
+                "DVP_Bias": delta_volume_bias(
+                    row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
+                    row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
+                    row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
+                ),
                 "Signal_CE": row['Signal_CE'],
                 "Signal_PE": row['Signal_PE'],
                 "PCR": row['PCR'],
-                "PCR_Signal": row['PCR_Signal'],
-                "OI_CE": row['openInterest_CE'],
-                "OI_PE": row['openInterest_PE'],
-                "ChgOI_CE": row.get('changeinOpenInterest_CE', 0),
-                "ChgOI_PE": row.get('changeinOpenInterest_PE', 0)
+                "PCR_Signal": row['PCR_Signal']
+            }
+
+            for k in row_data:
+                if "_Bias" in k:
+                    bias = row_data[k]
+                    score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
+
+            row_data["BiasScore"] = score
+            row_data["Verdict"] = final_verdict(score)
+            total_score += score
+            bias_results.append(row_data)
+
+        df_summary = pd.DataFrame(bias_results)
+        
+        # Record PCR history
+        for _, row in df_summary.iterrows():
+            new_pcr_data = pd.DataFrame({
+                "Time": [now.strftime("%H:%M:%S")],
+                "Strike": [row['Strike']],
+                "PCR": [row['PCR']],
+                "Signal": [row['PCR_Signal']],
+                "VIX": [vix_value]
             })
+            st.session_state.pcr_history = pd.concat([st.session_state.pcr_history, new_pcr_data])
 
-        df_summary = pd.DataFrame(summary_data)
-        
-        # Display the results
-        st.markdown("### 📊 Option Chain with OI + Price Signals")
-        
-        def color_signal(val):
-            if val == "Long Build-up":
-                return 'background-color: #90EE90; color: black'
-            elif val == "Short Build-up":
-                return 'background-color: #FFB6C1; color: black'
-            elif val == "Long Covering":
-                return 'background-color: #FFD700; color: black'
-            elif val == "Short Covering":
-                return 'background-color: #87CEFA; color: black'
-            else:
-                return 'background-color: #F5F5F5; color: black'
-        
-        def color_pcr(val):
-            if val > st.session_state.pcr_threshold_bull:
-                return 'background-color: #90EE90; color: black'
-            elif val < st.session_state.pcr_threshold_bear:
-                return 'background-color: #FFB6C1; color: black'
-            else:
-                return 'background-color: #FFFFE0; color: black'
+        atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
+        market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
+        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
 
-        styled_df = df_summary.style.applymap(color_signal, subset=['Signal_CE', 'Signal_PE']).applymap(
-            color_pcr, subset=['PCR']
-        )
+        # Store zones in session state
+        st.session_state.support_zone = support_zone
+        st.session_state.resistance_zone = resistance_zone
+
+        # Update price history
+        current_time_str = now.strftime("%H:%M:%S")
+        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
+        st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
+
+        # Format support/resistance strings
+        support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) and None not in support_zone else "N/A"
+        resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) and None not in resistance_zone else "N/A"
+
+        # === Main Display ===
+        st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
+        st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
+        st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
         
-        st.dataframe(styled_df, use_container_width=True)
-        
-        # Show signal interpretation
-        with st.expander("📖 Signal Interpretation Guide"):
-            st.info("""
-            **OI + Price Action Signals:**
+        # Plot price action
+        plot_price_with_sr()
+
+        # Option Chain Summary with OI + Price Signals
+        with st.expander("📊 Option Chain Summary with OI + Price Signals", expanded=True):
+            st.info(f"""
+            ℹ️ **PCR Interpretation** (VIX: {vix_value}):
+            - >{st.session_state.pcr_threshold_bull} = Bullish
+            - <{st.session_state.pcr_threshold_bear} = Bearish
+            - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
+            
+            ℹ️ **OI + Price Signal Interpretation**:
             - 🟢 **Long Build-up**: Price ↑ + OI ↑ (Bullish)
             - 🔴 **Short Build-up**: Price ↓ + OI ↑ (Bearish)  
             - 🟡 **Long Covering**: Price ↓ + OI ↓ (Bearish unwinding)
             - 🔵 **Short Covering**: Price ↑ + OI ↓ (Bullish unwinding)
             - ⚪ **Neutral**: No significant movement
+            """)
             
-            **PCR Signals:**
-            - 🟢 **Bullish**: PCR > {}
-            - 🔴 **Bearish**: PCR < {}
-            - 🟡 **Neutral**: PCR between {} and {}
-            """.format(
-                st.session_state.pcr_threshold_bull,
-                st.session_state.pcr_threshold_bear,
-                st.session_state.pcr_threshold_bear,
-                st.session_state.pcr_threshold_bull
-            ))
+            def color_pcr(val):
+                if val > st.session_state.pcr_threshold_bull:
+                    return 'background-color: #90EE90; color: black'
+                elif val < st.session_state.pcr_threshold_bear:
+                    return 'background-color: #FFB6C1; color: black'
+                else:
+                    return 'background-color: #FFFFE0; color: black'
+            
+            def color_signal(val):
+                if val == "Long Build-up":
+                    return 'background-color: #90EE90; color: black'
+                elif val == "Short Build-up":
+                    return 'background-color: #FFB6C1; color: black'
+                elif val == "Long Covering":
+                    return 'background-color: #FFD700; color: black'
+                elif val == "Short Covering":
+                    return 'background-color: #87CEFA; color: black'
+                else:
+                    return 'background-color: #F5F5F5; color: black'
 
+            styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(
+                color_signal, subset=['Signal_CE', 'Signal_PE']
+            )
+            
+            st.dataframe(styled_df, use_container_width=True, height=400)
+        
+        # Trade Log
+        if st.session_state.trade_log:
+            st.markdown("### 📜 Trade Log")
+            st.dataframe(pd.DataFrame(st.session_state.trade_log))
+
+        # === Enhanced Features Section ===
+        st.markdown("---")
+        st.markdown("## 📈 Enhanced Features")
+        
+        # PCR Configuration
+        st.markdown("### 🧮 PCR Configuration")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.session_state.pcr_threshold_bull = st.number_input(
+                "Bullish PCR Threshold (>)", 
+                min_value=1.0, max_value=5.0, 
+                value=st.session_state.pcr_threshold_bull, 
+                step=0.1
+            )
+        with col2:
+            st.session_state.pcr_threshold_bear = st.number_input(
+                "Bearish PCR Threshold (<)", 
+                min_value=0.1, max_value=1.0, 
+                value=st.session_state.pcr_threshold_bear, 
+                step=0.1
+            )
+        with col3:
+            st.session_state.use_pcr_filter = st.checkbox(
+                "Enable PCR Filtering", 
+                value=st.session_state.use_pcr_filter
+            )
+        
+        # PCR History
+        with st.expander("📈 PCR History"):
+            if not st.session_state.pcr_history.empty:
+                pcr_pivot = st.session_state.pcr_history.pivot_table(
+                    index='Time', 
+                    columns='Strike', 
+                    values='PCR',
+                    aggfunc='last'
+                )
+                st.line_chart(pcr_pivot)
+                st.dataframe(st.session_state.pcr_history)
+            else:
+                st.info("No PCR history recorded yet")
+        
+        # Enhanced Trade Log
+        display_enhanced_trade_log()
+        
+        # Export functionality
+        st.markdown("---")
+        st.markdown("### 📥 Data Export")
+        if st.button("Prepare Excel Export"):
+            st.session_state.export_data = True
+        handle_export_data(df_summary, underlying)
+        
+        # Call Log Book
+        st.markdown("---")
+        display_call_log_book()
+        
+        # Auto update call log with current price
+        auto_update_call_log(underlying)
+
+    except json.JSONDecodeError as e:
+        st.error("❌ Failed to decode JSON response from NSE API. The market might be closed or the API is unavailable.")
+        send_telegram_message("❌ NSE API JSON decode error - Market may be closed")
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Network error: {e}")
+        send_telegram_message(f"❌ Network error: {str(e)}")
     except Exception as e:
         st.error(f"❌ Unexpected error: {e}")
         import traceback
         st.error(f"Traceback: {traceback.format_exc()}")
+        send_telegram_message(f"❌ Unexpected error: {str(e)}")
 
 # === Main Function Call ===
 if __name__ == "__main__":
