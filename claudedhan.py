@@ -866,7 +866,8 @@ def analyze():
         
         # Auto update call log with current price
         auto_update_call_log(underlying)
-        except Exception as e:
+
+    except Exception as e:
         st.error(f"❌ Unexpected error: {e}")
         send_telegram_message(f"❌ Unexpected error: {str(e)}")
 
