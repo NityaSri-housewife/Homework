@@ -136,7 +136,7 @@ def get_option_chain(underlying_scrip=13, underlying_seg="IDX_I", expiry_date=No
                 expiry_date = expiry_data["data"][0]  # Use the first expiry
             else:
                 st.error("Failed to get expiry dates from Dhan API")
-                return None
+                return None, None
         
         # Get option chain for the selected expiry
         payload = {
@@ -243,7 +243,7 @@ def send_telegram_message(message):
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
 
-# === Option Analysis Functions (Unchanged) ===
+# === Option Analysis Functions ===
 def calculate_greeks(option_type, S, K, T, r, sigma):
     """Calculate option Greeks using Black-Scholes model"""
     if T <= 0 or sigma <= 0 or S <= 0:
@@ -545,21 +545,12 @@ def analyze():
     
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
-        current_day = now.weekday()
-        current_time = now.time()
-        market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("01:40", "%H:%M").time()
-
-        # Check market hours
-        if current_day >= 5 or not (market_start <= current_time <= market_end):
-            st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
-            return
 
         # Fetch historical data from Supabase
         st.session_state.historical_oi_data = fetch_historical_oi_data(days=1)
         
         # Delete old data at the start of each day (keep only 1 day data)
-        if current_time.hour == 9 and current_time.minute < 5:
+        if now.hour == 9 and now.minute < 5:
             delete_old_data(days_to_keep=1)
 
         # Get underlying value and VIX from Dhan API
@@ -591,12 +582,25 @@ def analyze():
         st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status}) | PCR Thresholds: Bull >{st.session_state.pcr_threshold_bull} | Bear <{st.session_state.pcr_threshold_bear}")
 
         # Store current data in Supabase
-        total_oi = option_chain_data.get('oi', {}).get('total', 0)  # Adjust based on actual response structure
+        # For Dhan API, we need to calculate total OI from the option chain data
+        total_oi_ce = 0
+        total_oi_pe = 0
+        
+        oc_data = option_chain_data.get('oc', {})
+        for strike_str, strike_data in oc_data.items():
+            ce_data = strike_data.get('ce', {})
+            pe_data = strike_data.get('pe', {})
+            
+            if ce_data:
+                total_oi_ce += ce_data.get('oi', 0)
+            if pe_data:
+                total_oi_pe += pe_data.get('oi', 0)
+        
+        total_oi = total_oi_ce + total_oi_pe
         store_oi_price_data(underlying, total_oi, "Market_Data")
 
         # Process option chain data
         # Extract calls and puts from Dhan API response
-        oc_data = option_chain_data.get('oc', {})
         calls, puts = [], []
         
         for strike_str, strike_data in oc_data.items():
