@@ -120,26 +120,31 @@ def classify_oi_price_signal(current_price, previous_price, current_oi, previous
     """
     Classify OI + Price action signal based on the given logic
     """
-    if previous_price == 0 or previous_oi == 0 or pd.isna(previous_price) or pd.isna(previous_oi):
+    if (previous_price == 0 or previous_oi == 0 or 
+        pd.isna(previous_price) or pd.isna(previous_oi) or
+        pd.isna(current_price) or pd.isna(current_oi)):
         return "Neutral"
     
-    price_change_pct = (current_price - previous_price) / previous_price
-    oi_change_pct = (current_oi - previous_oi) / previous_oi
-    
-    price_up = price_change_pct > threshold
-    price_down = price_change_pct < -threshold
-    oi_up = oi_change_pct > threshold
-    oi_down = oi_change_pct < -threshold
-    
-    if price_up and oi_up:
-        return "Long Build-up"
-    elif price_down and oi_up:
-        return "Short Build-up"
-    elif price_down and oi_down:
-        return "Long Covering"
-    elif price_up and oi_down:
-        return "Short Covering"
-    else:
+    try:
+        price_change_pct = (current_price - previous_price) / previous_price
+        oi_change_pct = (current_oi - previous_oi) / previous_oi
+        
+        price_up = price_change_pct > threshold
+        price_down = price_change_pct < -threshold
+        oi_up = oi_change_pct > threshold
+        oi_down = oi_change_pct < -threshold
+        
+        if price_up and oi_up:
+            return "Long Build-up"
+        elif price_down and oi_up:
+            return "Short Build-up"
+        elif price_down and oi_down:
+            return "Long Covering"
+        elif price_up and oi_down:
+            return "Short Covering"
+        else:
+            return "Neutral"
+    except:
         return "Neutral"
 
 def display_enhanced_trade_log():
@@ -158,25 +163,19 @@ def display_enhanced_trade_log():
             lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
         )
     
-    def color_pnl(row):
-        colors = []
-        for col in row.index:
-            if col == 'Unrealized_PL':
-                if row[col] > 0:
-                    colors.append('background-color: #90EE90; color: black')
-                elif row[col] < -100:
-                    colors.append('background-color: #FFB6C1; color: black')
-                else:
-                    colors.append('background-color: #FFFFE0; color: black')
-            else:
-                colors.append('')
-        return colors
+    def color_pnl(val):
+        if val > 0:
+            return 'background-color: #90EE90; color: black'
+        elif val < -100:
+            return 'background-color: #FFB6C1; color: black'
+        else:
+            return 'background-color: #FFFFE0; color: black'
     
-    styled_trades = df_trades.style.apply(color_pnl, axis=1)
+    styled_trades = df_trades.style.applymap(color_pnl, subset=['Unrealized_PL'])
     st.dataframe(styled_trades, use_container_width=True)
     
-    total_pl = df_trades['Unrealized_PL'].sum()
-    win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
+    total_pl = df_trades['Unrealized_PL'].sum() if 'Unrealized_PL' in df_trades.columns else 0
+    win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100 if len(df_trades) > 0 else 0
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -295,64 +294,16 @@ def plot_price_with_sr():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-def auto_update_call_log(current_price):
-    """Automatically update call log status"""
-    for call in st.session_state.call_log_book:
-        if call["Status"] != "Active":
-            continue
-        
-        if call["Type"] == "CE":
-            if current_price >= max(call["Targets"].values()):
-                call["Status"] = "Hit Target"
-                call["Hit_Target"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-            elif current_price <= call["Stoploss"]:
-                call["Status"] = "Hit Stoploss"
-                call["Hit_Stoploss"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-        elif call["Type"] == "PE":
-            if current_price <= min(call["Targets"].values()):
-                call["Status"] = "Hit Target"
-                call["Hit_Target"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-            elif current_price >= call["Stoploss"]:
-                call["Status"] = "Hit Stoploss"
-                call["Hit_Stoploss"] = True
-                call["Exit_Time"] = datetime.now(timezone("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
-                call["Exit_Price"] = current_price
-
-def display_call_log_book():
-    """Display the call log book"""
-    st.markdown("### 📚 Call Log Book")
-    if not st.session_state.call_log_book:
-        st.info("No calls have been made yet.")
-        return
-    
-    df_log = pd.DataFrame(st.session_state.call_log_book)
-    st.dataframe(df_log, use_container_width=True)
-    
-    if st.button("Download Call Log Book as CSV"):
-        st.download_button(
-            label="Download CSV",
-            data=df_log.to_csv(index=False).encode(),
-            file_name="call_log_book.csv",
-            mime="text/csv"
-        )
-
 def analyze():
     """Main analysis function"""
-    if 'trade_log' not in st.session_state:
-        st.session_state.trade_log = []
-    
     try:
+        st.title("Nifty Options Analyzer")
+        
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("18:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
@@ -408,32 +359,26 @@ def analyze():
         underlying = data['records']['underlyingValue']
 
         st.markdown(f"### 📍 Spot Price: {underlying}")
-        st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status}) | PCR Thresholds: Bull >{st.session_state.pcr_threshold_bull} | Bear <{st.session_state.pcr_threshold_bear}")
-
-        expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
-        today = datetime.now(timezone("Asia/Kolkata"))
-        T = max((expiry_date - today).days, 1) / 365
-        r = 0.06
+        st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status})")
 
         # Process option chain data
         calls, puts = [], []
         for item in records:
             if 'CE' in item and item['CE']['expiryDate'] == expiry:
                 ce = item['CE']
-                if ce['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('CE', underlying, ce['strikePrice'], T, r, ce['impliedVolatility'] / 100)
-                    ce.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
                 calls.append(ce)
 
             if 'PE' in item and item['PE']['expiryDate'] == expiry:
                 pe = item['PE']
-                if pe['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('PE', underlying, pe['strikePrice'], T, r, pe['impliedVolatility'] / 100)
-                    pe.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
                 puts.append(pe)
 
         df_ce = pd.DataFrame(calls)
         df_pe = pd.DataFrame(puts)
+        
+        if df_ce.empty or df_pe.empty:
+            st.error("❌ No option data available")
+            return
+            
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
         # Filter strikes around ATM
@@ -459,31 +404,37 @@ def analyze():
                 
                 if not prev_row.empty:
                     # For CE (Call options)
-                    current_price_ce = row['lastPrice_CE']
-                    previous_price_ce = prev_row['lastPrice_CE'].values[0]
-                    current_oi_ce = row['openInterest_CE']
-                    previous_oi_ce = prev_row['openInterest_CE'].values[0]
-                    
-                    df.at[index, 'Signal_CE'] = classify_oi_price_signal(
-                        current_price_ce, previous_price_ce, current_oi_ce, previous_oi_ce
-                    )
+                    try:
+                        current_price_ce = row['lastPrice_CE']
+                        previous_price_ce = prev_row['lastPrice_CE'].values[0]
+                        current_oi_ce = row['openInterest_CE']
+                        previous_oi_ce = prev_row['openInterest_CE'].values[0]
+                        
+                        df.at[index, 'Signal_CE'] = classify_oi_price_signal(
+                            current_price_ce, previous_price_ce, current_oi_ce, previous_oi_ce
+                        )
+                    except:
+                        df.at[index, 'Signal_CE'] = "Neutral"
                     
                     # For PE (Put options)
-                    current_price_pe = row['lastPrice_PE']
-                    previous_price_pe = prev_row['lastPrice_PE'].values[0]
-                    current_oi_pe = row['openInterest_PE']
-                    previous_oi_pe = prev_row['openInterest_PE'].values[0]
-                    
-                    df.at[index, 'Signal_PE'] = classify_oi_price_signal(
-                        current_price_pe, previous_price_pe, current_oi_pe, previous_oi_pe
-                    )
+                    try:
+                        current_price_pe = row['lastPrice_PE']
+                        previous_price_pe = prev_row['lastPrice_PE'].values[0]
+                        current_oi_pe = row['openInterest_PE']
+                        previous_oi_pe = prev_row['openInterest_PE'].values[0]
+                        
+                        df.at[index, 'Signal_PE'] = classify_oi_price_signal(
+                            current_price_pe, previous_price_pe, current_oi_pe, previous_oi_pe
+                        )
+                    except:
+                        df.at[index, 'Signal_PE'] = "Neutral"
         
         # Store current data for next comparison
         st.session_state.previous_oi_data = current_oi_data
         
         # Calculate PCR
-        df['PCR'] = (df['openInterest_PE'] + df['changeinOpenInterest_PE']) / (df['openInterest_CE'] + df['changeinOpenInterest_CE'])
-        df['PCR'] = np.where((df['openInterest_CE'] + df['changeinOpenInterest_CE']) == 0, 0, df['PCR'])
+        df['PCR'] = (df['openInterest_PE']) / (df['openInterest_CE'])
+        df['PCR'] = np.where(df['openInterest_CE'] == 0, 0, df['PCR'])
         df['PCR'] = df['PCR'].round(2)
         df['PCR_Signal'] = np.where(
             df['PCR'] > st.session_state.pcr_threshold_bull,
@@ -495,70 +446,30 @@ def analyze():
             )
         )
 
-        # Calculate bias scores
-        weights = {
-            'ChgOI_Bias': 1.5, 'Volume_Bias': 1.0, 'Gamma_Bias': 1.2,
-            'AskQty_Bias': 0.8, 'BidQty_Bias': 0.8, 'IV_Bias': 1.0, 'DVP_Bias': 1.5
-        }
-
-        bias_results, total_score = [], 0
+        # Create summary DataFrame
+        summary_data = []
         for _, row in df.iterrows():
             if abs(row['strikePrice'] - atm_strike) > 100:
                 continue
 
-            score = 0
-            row_data = {
+            summary_data.append({
                 "Strike": row['strikePrice'],
                 "Zone": row['Zone'],
                 "Level": row['Level'],
-                "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
-                "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
-                "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
-                "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
-                "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
-                "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
-                "DVP_Bias": delta_volume_bias(
-                    row['lastPrice_CE'] - row['lastPrice_PE'],
-                    row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
-                    row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
-                ),
                 "Signal_CE": row['Signal_CE'],
                 "Signal_PE": row['Signal_PE'],
                 "PCR": row['PCR'],
-                "PCR_Signal": row['PCR_Signal']
-            }
-
-            for k in row_data:
-                if "_Bias" in k:
-                    bias = row_data[k]
-                    score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
-
-            row_data["BiasScore"] = score
-            row_data["Verdict"] = final_verdict(score)
-            total_score += score
-            bias_results.append(row_data)
-
-        df_summary = pd.DataFrame(bias_results)
-        
-        # Record PCR history
-        for _, row in df_summary.iterrows():
-            new_pcr_data = pd.DataFrame({
-                "Time": [now.strftime("%H:%M:%S")],
-                "Strike": [row['Strike']],
-                "PCR": [row['PCR']],
-                "Signal": [row['PCR_Signal']],
-                "VIX": [vix_value]
+                "PCR_Signal": row['PCR_Signal'],
+                "OI_CE": row['openInterest_CE'],
+                "OI_PE": row['openInterest_PE'],
+                "ChgOI_CE": row.get('changeinOpenInterest_CE', 0),
+                "ChgOI_PE": row.get('changeinOpenInterest_PE', 0)
             })
-            st.session_state.pcr_history = pd.concat([st.session_state.pcr_history, new_pcr_data])
 
-        # Apply styling
-        def color_pcr(val):
-            if val > st.session_state.pcr_threshold_bull:
-                return 'background-color: #90EE90; color: black'
-            elif val < st.session_state.pcr_threshold_bear:
-                return 'background-color: #FFB6C1; color: black'
-            else:
-                return 'background-color: #FFFFE0; color: black'
+        df_summary = pd.DataFrame(summary_data)
+        
+        # Display the results
+        st.markdown("### 📊 Option Chain with OI + Price Signals")
         
         def color_signal(val):
             if val == "Long Build-up":
@@ -571,17 +482,46 @@ def analyze():
                 return 'background-color: #87CEFA; color: black'
             else:
                 return 'background-color: #F5F5F5; color: black'
+        
+        def color_pcr(val):
+            if val > st.session_state.pcr_threshold_bull:
+                return 'background-color: #90EE90; color: black'
+            elif val < st.session_state.pcr_threshold_bear:
+                return 'background-color: #FFB6C1; color: black'
+            else:
+                return 'background-color: #FFFFE0; color: black'
 
-        styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(
-            color_signal, subset=['Signal_CE', 'Signal_PE']
+        styled_df = df_summary.style.applymap(color_signal, subset=['Signal_CE', 'Signal_PE']).applymap(
+            color_pcr, subset=['PCR']
         )
-
-        # Rest of the function remains the same...
-        # [The rest of your existing code for market view, support/resistance, etc.]
+        
+        st.dataframe(styled_df, use_container_width=True)
+        
+        # Show signal interpretation
+        with st.expander("📖 Signal Interpretation Guide"):
+            st.info("""
+            **OI + Price Action Signals:**
+            - 🟢 **Long Build-up**: Price ↑ + OI ↑ (Bullish)
+            - 🔴 **Short Build-up**: Price ↓ + OI ↑ (Bearish)  
+            - 🟡 **Long Covering**: Price ↓ + OI ↓ (Bearish unwinding)
+            - 🔵 **Short Covering**: Price ↑ + OI ↓ (Bullish unwinding)
+            - ⚪ **Neutral**: No significant movement
+            
+            **PCR Signals:**
+            - 🟢 **Bullish**: PCR > {}
+            - 🔴 **Bearish**: PCR < {}
+            - 🟡 **Neutral**: PCR between {} and {}
+            """.format(
+                st.session_state.pcr_threshold_bull,
+                st.session_state.pcr_threshold_bear,
+                st.session_state.pcr_threshold_bear,
+                st.session_state.pcr_threshold_bull
+            ))
 
     except Exception as e:
         st.error(f"❌ Unexpected error: {e}")
-        send_telegram_message(f"❌ Unexpected error: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
 
 # === Main Function Call ===
 if __name__ == "__main__":
