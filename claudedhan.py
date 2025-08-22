@@ -564,7 +564,7 @@ def analyze():
                     greeks = calculate_greeks('PE', underlying, strike_price, T, r, pe['impliedVolatility'] / 100)
                     pe.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
                 puts.append(pe)
-df_ce = pd.DataFrame(calls)
+        df_ce = pd.DataFrame(calls)
         df_pe = pd.DataFrame(puts)
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
 
