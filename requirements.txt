@@ -22,6 +22,7 @@ pandas
 numpy
 requests
 streamlit
+supabase
 
 # Core packages
 streamlit>=1.28.0
@@ -29,6 +30,7 @@ requests>=2.31.0
 pandas>=2.0.0
 numpy>=1.24.0
 scipy>=1.10.0
+
 
 # Excel & Timezone
 openpyxl>=3.1.0
