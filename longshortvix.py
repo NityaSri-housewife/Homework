@@ -365,7 +365,7 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("18:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         # Check market hours
         if current_day >= 5 or not (market_start <= current_time <= market_end):
@@ -465,7 +465,7 @@ def analyze():
         # Store current OI data for comparison in next iteration
         current_oi_data = df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 'lastPrice_CE', 'lastPrice_PE']].copy()
         
-        # Initialize Signal column
+        # Initialize Signal columns
         df['Signal_CE'] = "Neutral"
         df['Signal_PE'] = "Neutral"
         
@@ -553,36 +553,40 @@ def analyze():
         df_summary = pd.DataFrame(bias_results)
         
         # === PCR CALCULATION AND MERGE ===
-        df_summary = pd.merge(
-            df_summary,
-            df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
-                'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
-                'Signal_CE', 'Signal_PE']],  # Include signals in the merge
-            left_on='Strike',
-            right_on='strikePrice',
-            how='left'
+        # First, prepare the PCR data from the main df
+        pcr_data = df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
+                      'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
+                      'Signal_CE', 'Signal_PE']].copy()
+        
+        pcr_data['PCR'] = (
+            (pcr_data['openInterest_PE'] + pcr_data['changeinOpenInterest_PE']) / 
+            (pcr_data['openInterest_CE'] + pcr_data['changeinOpenInterest_CE'])
         )
 
-        df_summary['PCR'] = (
-            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
-            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
-        )
-
-        df_summary['PCR'] = np.where(
-            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
+        pcr_data['PCR'] = np.where(
+            (pcr_data['openInterest_CE'] + pcr_data['changeinOpenInterest_CE']) == 0,
             0,
-            df_summary['PCR']
+            pcr_data['PCR']
         )
 
-        df_summary['PCR'] = df_summary['PCR'].round(2)
-        df_summary['PCR_Signal'] = np.where(
-            df_summary['PCR'] > st.session_state.pcr_threshold_bull,
+        pcr_data['PCR'] = pcr_data['PCR'].round(2)
+        pcr_data['PCR_Signal'] = np.where(
+            pcr_data['PCR'] > st.session_state.pcr_threshold_bull,
             "Bullish",
             np.where(
-                df_summary['PCR'] < st.session_state.pcr_threshold_bear,
+                pcr_data['PCR'] < st.session_state.pcr_threshold_bear,
                 "Bearish",
                 "Neutral"
             )
+        )
+        
+        # Now merge with df_summary
+        df_summary = pd.merge(
+            df_summary,
+            pcr_data[['strikePrice', 'PCR', 'PCR_Signal', 'Signal_CE', 'Signal_PE']],
+            left_on='Strike',
+            right_on='strikePrice',
+            how='left'
         )
 
         def color_pcr(val):
@@ -605,10 +609,10 @@ def analyze():
             else:
                 return 'background-color: #F5F5F5; color: black'
 
+        # Apply styling
         styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(
             color_signal, subset=['Signal_CE', 'Signal_PE']
         )
-        df_summary = df_summary.drop(columns=['strikePrice'])
         
         # Record PCR history
         for _, row in df_summary.iterrows():
