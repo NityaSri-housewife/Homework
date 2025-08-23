@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import io
 import json
 from supabase import create_client, Client
+import time
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -27,7 +28,16 @@ def init_supabase():
     try:
         supabase_url = st.secrets["supabase"]["url"]
         supabase_key = st.secrets["supabase"]["key"]
-        return create_client(supabase_url, supabase_key)
+        client = create_client(supabase_url, supabase_key)
+        
+        # Check if table exists, create if not
+        try:
+            client.table("oi_price_history").select("count").limit(1).execute()
+        except Exception as e:
+            st.warning("Creating oi_price_history table...")
+            # You'll need to manually create this table in Supabase with columns:
+            # id (bigint, auto-increment), timestamp (timestamp), price (float), oi (float), signal (text)
+        return client
     except:
         st.error("Supabase credentials not found. Please check your secrets.toml file.")
         return None
@@ -102,6 +112,9 @@ def get_vix_value():
             "IDX_I": [21]  # India VIX index
         }
         
+        # Add delay to avoid rate limiting
+        time.sleep(1)
+        
         response = requests.post(url, headers=get_dhan_headers(), json=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -109,10 +122,10 @@ def get_vix_value():
         if data.get("status") == "success" and "data" in data:
             return data["data"]["IDX_I"]["21"]["last_price"]
         else:
-            st.error("Failed to get VIX value from Dhan API")
+            st.warning("Failed to get VIX value from Dhan API, using default value")
             return 11  # Default value
     except Exception as e:
-        st.error(f"Error getting VIX value: {e}")
+        st.warning(f"Error getting VIX value: {e}, using default value")
         return 11  # Default value
 
 def get_option_chain(underlying_scrip=13, underlying_seg="IDX_I", expiry_date=None):
@@ -127,6 +140,9 @@ def get_option_chain(underlying_scrip=13, underlying_seg="IDX_I", expiry_date=No
                 "UnderlyingScrip": underlying_scrip,
                 "UnderlyingSeg": underlying_seg
             }
+            
+            # Add delay to avoid rate limiting
+            time.sleep(1)
             
             expiry_response = requests.post(expiry_list_url, headers=get_dhan_headers(), json=expiry_payload, timeout=10)
             expiry_response.raise_for_status()
@@ -144,6 +160,9 @@ def get_option_chain(underlying_scrip=13, underlying_seg="IDX_I", expiry_date=No
             "UnderlyingSeg": underlying_seg,
             "Expiry": expiry_date
         }
+        
+        # Add delay to avoid rate limiting
+        time.sleep(1)
         
         response = requests.post(url, headers=get_dhan_headers(), json=payload, timeout=10)
         response.raise_for_status()
@@ -180,7 +199,7 @@ def store_oi_price_data(price, oi, signal):
             return True
         return False
     except Exception as e:
-        st.error(f"Error storing data in Supabase: {e}")
+        st.warning(f"Supabase storage skipped: {e}")
         return False
 
 def fetch_historical_oi_data(days=1):
@@ -204,7 +223,7 @@ def fetch_historical_oi_data(days=1):
             return df
         return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error fetching historical data: {e}")
+        st.warning(f"Historical data fetch skipped: {e}")
         return pd.DataFrame()
 
 def delete_old_data(days_to_keep=1):
@@ -225,7 +244,7 @@ def delete_old_data(days_to_keep=1):
             return True
         return False
     except Exception as e:
-        st.error(f"Error deleting old data: {e}")
+        st.warning(f"Old data deletion skipped: {e}")
         return False
 
 # === Telegram Config ===
@@ -298,8 +317,8 @@ def delta_volume_bias(price_diff, volume_diff, oi_diff):
 
 def determine_level(row):
     """Determine support/resistance level based on OI"""
-    ce_oi = row.get('openInterest_CE', 0)
-    pe_oi = row.get('openInterest_PE', 0)
+    ce_oi = row.get('oi', 0) if 'oi' in row else row.get('openInterest', 0)
+    pe_oi = row.get('oi', 0) if 'oi' in row else row.get('openInterest', 0)
     
     if ce_oi > pe_oi * 1.5:
         return "Resistance"
@@ -611,10 +630,26 @@ def analyze():
                 
                 if ce_data:
                     ce_data['strikePrice'] = strike_price
+                    # Map Dhan column names to expected names
+                    ce_data['openInterest'] = ce_data.get('oi', 0)
+                    ce_data['lastPrice'] = ce_data.get('last_price', 0)
+                    ce_data['impliedVolatility'] = ce_data.get('implied_volatility', 0)
+                    ce_data['changeinOpenInterest'] = ce_data.get('change_in_oi', 0)
+                    ce_data['totalTradedVolume'] = ce_data.get('volume', 0)
+                    ce_data['askQty'] = ce_data.get('top_ask_quantity', 0)
+                    ce_data['bidQty'] = ce_data.get('top_bid_quantity', 0)
                     calls.append(ce_data)
                 
                 if pe_data:
                     pe_data['strikePrice'] = strike_price
+                    # Map Dhan column names to expected names
+                    pe_data['openInterest'] = pe_data.get('oi', 0)
+                    pe_data['lastPrice'] = pe_data.get('last_price', 0)
+                    pe_data['impliedVolatility'] = pe_data.get('implied_volatility', 0)
+                    pe_data['changeinOpenInterest'] = pe_data.get('change_in_oi', 0)
+                    pe_data['totalTradedVolume'] = pe_data.get('volume', 0)
+                    pe_data['askQty'] = pe_data.get('top_ask_quantity', 0)
+                    pe_data['bidQty'] = pe_data.get('top_bid_quantity', 0)
                     puts.append(pe_data)
             except ValueError:
                 continue
@@ -668,6 +703,7 @@ def analyze():
         df['Level'] = df.apply(determine_level, axis=1)
 
         # === OI + Price Signal Classification ===
+        # Use the correct column names for Dhan API
         current_oi_data = df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 'lastPrice_CE', 'lastPrice_PE']].copy()
         
         # Initialize Signal columns
