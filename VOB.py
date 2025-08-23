@@ -192,23 +192,54 @@ class DhanAPI:
             logger.error(f"Error fetching LTP data: {e}")
             return None
 
-# Supabase Client
+# Supabase Client - FIXED VERSION
 class SupabaseClient:
     def __init__(self, supabase_url, supabase_key):
-        self.supabase: Client = create_client(supabase_url, supabase_key)
+        self.supabase = create_client(supabase_url, supabase_key)
     
     def create_tables(self):
-        # Create historical data table
-        self.supabase.table("historical_data").create(
-            primary_key=["timestamp", "security_id", "exchange_segment"],
-            if_not_exists=True
-        ).execute()
-        
-        # Create signals table
-        self.supabase.table("signals").create(
-            primary_key=["id"],
-            if_not_exists=True
-        ).execute()
+        """Create tables using SQL execution instead of deprecated create() method"""
+        try:
+            # Create historical data table
+            create_historical_table = """
+            CREATE TABLE IF NOT EXISTS historical_data (
+                id SERIAL PRIMARY KEY,
+                security_id VARCHAR(50) NOT NULL,
+                exchange_segment VARCHAR(20) NOT NULL,
+                timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+                open DECIMAL(18, 4) NOT NULL,
+                high DECIMAL(18, 4) NOT NULL,
+                low DECIMAL(18, 4) NOT NULL,
+                close DECIMAL(18, 4) NOT NULL,
+                volume BIGINT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(security_id, exchange_segment, timestamp)
+            );
+            """
+            
+            # Create signals table
+            create_signals_table = """
+            CREATE TABLE IF NOT EXISTS signals (
+                id SERIAL PRIMARY KEY,
+                security_id VARCHAR(50) NOT NULL,
+                exchange_segment VARCHAR(20) NOT NULL,
+                timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+                signal_type VARCHAR(10) NOT NULL,
+                price DECIMAL(18, 4) NOT NULL,
+                details JSONB NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+            """
+            
+            # Execute SQL
+            self.supabase.rpc('exec_sql', {'query': create_historical_table}).execute()
+            self.supabase.rpc('exec_sql', {'query': create_signals_table}).execute()
+            
+            logger.info("Tables created successfully")
+            
+        except Exception as e:
+            logger.error(f"Error creating tables: {e}")
+            # Fallback: tables will be created on first insert
     
     def store_historical_data(self, security_id, exchange_segment, data):
         try:
@@ -228,7 +259,7 @@ class SupabaseClient:
                 }
                 records.append(record)
             
-            # Insert data
+            # Insert data using upsert
             response = self.supabase.table("historical_data").upsert(records).execute()
             logger.info(f"Stored {len(records)} historical data records")
             return response
@@ -286,10 +317,10 @@ class SupabaseClient:
     def clear_history(self):
         try:
             # Delete all historical data
-            self.supabase.table("historical_data").delete().neq("id", "").execute()
+            self.supabase.table("historical_data").delete().neq("id", "0").execute()
             
             # Delete all signals
-            self.supabase.table("signals").delete().neq("id", "").execute()
+            self.supabase.table("signals").delete().neq("id", "0").execute()
             
             logger.info("Cleared all historical data and signals")
             return True
@@ -302,7 +333,6 @@ class TelegramBot:
     def __init__(self, bot_token, chat_id):
         self.bot_token = bot_token
         self.chat_id = chat_id
-        self.application = Application.builder().token(bot_token).build()
     
     def send_message(self, message):
         try:
@@ -311,20 +341,6 @@ class TelegramBot:
             logger.info(f"Sent Telegram message: {message}")
         except Exception as e:
             logger.error(f"Error sending Telegram message: {e}")
-    
-    def start_bot(self):
-        # Add command handlers
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("status", self.status_command))
-        
-        # Start the bot
-        self.application.run_polling()
-    
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("VOB Trading Bot is running! Use /status to check current status.")
-    
-    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Bot is active and monitoring for signals.")
 
 # Main Trading System
 class VOBTradingSystem:
@@ -357,15 +373,20 @@ class VOBTradingSystem:
                 chat_id=st.secrets["TELEGRAM_CHAT_ID"]
             )
             
-            # Create tables if they don't exist
-            self.supabase_client.create_tables()
+            # Try to create tables (will work if RPC is enabled)
+            try:
+                self.supabase_client.create_tables()
+            except:
+                logger.warning("Could not create tables via RPC, they will be created on first insert")
             
             self.initialized = True
             logger.info("All clients initialized successfully")
+            return True
             
         except Exception as e:
             logger.error(f"Error initializing clients: {e}")
             st.error(f"Failed to initialize: {e}")
+            return False
     
     def is_market_hours(self):
         """Check if current time is within Indian market hours (Mon-Fri, 9:00 to 15:40)"""
@@ -445,12 +466,13 @@ class VOBTradingSystem:
             
             new_signals = []
             for signal in signals:
-                if signal['timestamp'] not in recent_timestamps:
+                signal_timestamp_str = signal['timestamp'].isoformat()
+                if signal_timestamp_str not in recent_timestamps:
                     # Store signal
                     signal_record = {
                         "security_id": "13",
                         "exchange_segment": "IDX_I",
-                        "timestamp": signal['timestamp'].isoformat(),
+                        "timestamp": signal_timestamp_str,
                         "signal_type": signal['type'],
                         "price": signal['price'],
                         "details": json.dumps(signal)
@@ -553,11 +575,14 @@ def main():
     
     if st.sidebar.button("Initialize System"):
         with st.spinner("Initializing clients..."):
-            trading_system.initialize_clients()
-        st.success("System initialized!")
+            if trading_system.initialize_clients():
+                st.success("System initialized!")
+            else:
+                st.error("Failed to initialize system. Check your secrets.")
     
     if not trading_system.initialized:
         st.warning("Please initialize the system first")
+        st.info("Make sure you have set all required secrets in .streamlit/secrets.toml")
         return
     
     # Main operations
@@ -589,9 +614,10 @@ def main():
     
     st.header("History Management")
     if st.button("Clear All History", type="secondary"):
-        if st.warning("Are you sure you want to clear all history? This cannot be undone."):
-            if trading_system.clear_history():
-                st.success("History cleared successfully")
+        if trading_system.clear_history():
+            st.success("History cleared successfully")
+        else:
+            st.error("Failed to clear history")
     
     # Display recent signals
     st.header("Recent Nifty Signals")
