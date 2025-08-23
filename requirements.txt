@@ -33,7 +33,7 @@ pandas
 numpy
 ta-lib
 matplotlib
-schedule pytz
+schedule
 
 # Core packages
 streamlit>=1.28.0
