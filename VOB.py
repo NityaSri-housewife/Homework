@@ -17,15 +17,16 @@ import logging
 import schedule
 import pytz
 import time as time_module
+import traceback
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Indian timezone
 INDIAN_TZ = pytz.timezone('Asia/Kolkata')
 
-# VOB Indicator Class (unchanged logic)
+# VOB Indicator Class (updated for intraday data and NaN handling)
 class VOBIndicator:
     def __init__(self, data, length1=5, colBull='#26ba9f', colBear='#ba2646'):
         self.data = data.copy()
@@ -35,37 +36,86 @@ class VOBIndicator:
         self.signals = []
         
     def calculate_ema(self, series, period):
-        return series.ewm(span=period, adjust=False).mean()
+        """Calculate EMA with proper NaN handling"""
+        # Ensure we have enough data
+        if len(series) < period:
+            return pd.Series([np.nan] * len(series), index=series.index)
+        
+        # Calculate EMA with min_periods to handle initial NaN values
+        return series.ewm(span=period, adjust=False, min_periods=1).mean()
     
     def calculate_atr(self, period=200, multiplier=3):
+        """Calculate ATR with proper NaN handling"""
         high = self.data['high']
         low = self.data['low']
         close = self.data['close']
         
+        # Handle case where we don't have enough data
+        if len(high) < 2:
+            return pd.Series([np.nan] * len(high), index=high.index)
+        
+        # Calculate True Range components
         tr1 = high - low
         tr2 = abs(high - close.shift(1))
         tr3 = abs(low - close.shift(1))
+        
+        # Combine TR components safely
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean() * multiplier
+        
+        # Calculate ATR with proper min_periods handling
+        atr = tr.rolling(window=period, min_periods=1).mean() * multiplier
+        
+        # Fill initial NaN values with the first valid ATR value
+        if atr.isna().any():
+            first_valid_idx = atr.first_valid_index()
+            if first_valid_idx is not None:
+                first_valid_value = atr.loc[first_valid_idx]
+                atr = atr.fillna(first_valid_value)
+        
         return atr
     
     def calculate_crossovers(self):
+        """Calculate EMA crossovers with NaN handling"""
+        # Calculate EMAs with proper period handling
         ema1 = self.calculate_ema(self.data['close'], self.length1)
         ema2 = self.calculate_ema(self.data['close'], self.length1 + 13)
         
-        crossUp = (ema1 > ema2) & (ema1.shift(1) <= ema2.shift(1))
-        crossDn = (ema1 < ema2) & (ema1.shift(1) >= ema2.shift(1))
+        # Handle cases where EMAs might have NaN values
+        valid_mask = ~ema1.isna() & ~ema2.isna()
+        
+        # Initialize with False
+        crossUp = pd.Series(False, index=ema1.index)
+        crossDn = pd.Series(False, index=ema1.index)
+        
+        # Calculate crossovers only where we have valid data
+        if valid_mask.any():
+            crossUp_valid = (ema1 > ema2) & (ema1.shift(1) <= ema2.shift(1))
+            crossDn_valid = (ema1 < ema2) & (ema1.shift(1) >= ema2.shift(1))
+            
+            crossUp[valid_mask] = crossUp_valid[valid_mask]
+            crossDn[valid_mask] = crossDn_valid[valid_mask]
         
         return crossUp, crossDn, ema1, ema2
     
     def find_extremes(self, window):
-        lowest = self.data['low'].rolling(window=window).min()
-        highest = self.data['high'].rolling(window=window).max()
+        """Find lowest low and highest high with proper window handling"""
+        # Ensure window doesn't exceed data length
+        actual_window = min(window, len(self.data))
+        
+        # Calculate rolling min/max with proper min_periods
+        lowest = self.data['low'].rolling(window=actual_window, min_periods=1).min()
+        highest = self.data['high'].rolling(window=actual_window, min_periods=1).max()
+        
         return lowest, highest
     
     def process_vob_signals(self):
+        """Process VOB signals with proper edge case handling"""
         crossUp, crossDn, ema1, ema2 = self.calculate_crossovers()
         window = self.length1 + 13
+        
+        # Ensure window doesn't exceed data length
+        actual_window = min(window, len(self.data))
+        
         atr = self.calculate_atr(200, 3)
         
         # Initialize signals list
@@ -73,10 +123,15 @@ class VOBIndicator:
         
         # Process bullish signals (crossUp)
         for i in range(len(self.data)):
-            if crossUp.iloc[i]:
-                lookback_start = max(0, i - window)
+            if crossUp.iloc[i] and not pd.isna(crossUp.iloc[i]):
+                lookback_start = max(0, i - actual_window)
                 lookback_data = self.data.iloc[lookback_start:i+1]
                 
+                # Skip if we don't have enough data
+                if len(lookback_data) < 1:
+                    continue
+                
+                # Find the lowest point in the lookback period
                 min_low_idx = lookback_data['low'].idxmin()
                 min_low_val = lookback_data.loc[min_low_idx, 'low']
                 
@@ -84,24 +139,33 @@ class VOBIndicator:
                     base = min(lookback_data.loc[min_low_idx, 'open'], 
                               lookback_data.loc[min_low_idx, 'close'])
                     
-                    if (base - min_low_val) < atr.iloc[i] * 0.5:
-                        base = min_low_val + atr.iloc[i] * 0.5
+                    # Handle ATR NaN case
+                    atr_value = atr.iloc[i] if not pd.isna(atr.iloc[i]) else 0
+                    
+                    if (base - min_low_val) < atr_value * 0.5:
+                        base = min_low_val + atr_value * 0.5
                     
                     signal = {
                         'type': 'bullish',
                         'timestamp': self.data.index[i],
                         'price': self.data['close'].iloc[i],
                         'base_price': base,
-                        'low_price': min_low_val
+                        'low_price': min_low_val,
+                        'atr_value': atr_value
                     }
                     self.signals.append(signal)
         
         # Process bearish signals (crossDn)
         for i in range(len(self.data)):
-            if crossDn.iloc[i]:
-                lookback_start = max(0, i - window)
+            if crossDn.iloc[i] and not pd.isna(crossDn.iloc[i]):
+                lookback_start = max(0, i - actual_window)
                 lookback_data = self.data.iloc[lookback_start:i+1]
                 
+                # Skip if we don't have enough data
+                if len(lookback_data) < 1:
+                    continue
+                
+                # Find the highest point in the lookback period
                 max_high_idx = lookback_data['high'].idxmax()
                 max_high_val = lookback_data.loc[max_high_idx, 'high']
                 
@@ -109,15 +173,19 @@ class VOBIndicator:
                     base = max(lookback_data.loc[max_high_idx, 'open'], 
                               lookback_data.loc[max_high_idx, 'close'])
                     
-                    if (max_high_val - base) < atr.iloc[i] * 0.5:
-                        base = max_high_val - atr.iloc[i] * 0.5
+                    # Handle ATR NaN case
+                    atr_value = atr.iloc[i] if not pd.isna(atr.iloc[i]) else 0
+                    
+                    if (max_high_val - base) < atr_value * 0.5:
+                        base = max_high_val - atr_value * 0.5
                     
                     signal = {
                         'type': 'bearish',
                         'timestamp': self.data.index[i],
                         'price': self.data['close'].iloc[i],
                         'base_price': base,
-                        'high_price': max_high_val
+                        'high_price': max_high_val,
+                        'atr_value': atr_value
                     }
                     self.signals.append(signal)
         
@@ -135,34 +203,31 @@ class DhanAPI:
             'Content-Type': 'application/json'
         }
     
-    def get_historical_data(self, security_id, exchange_segment, instrument, 
-                          from_date, to_date, interval=None):
-        if interval:
+    def get_intraday_data(self, security_id, exchange_segment, instrument, 
+                          from_date, to_date, interval="3"):
+        """Fetch intraday data with 3-minute intervals"""
+        try:
             # Intraday data
             url = f"{self.base_url}/charts/intraday"
             payload = {
                 "securityId": security_id,
                 "exchangeSegment": exchange_segment,
                 "instrument": instrument,
-                "interval": interval,
+                "interval": interval,  # 3-minute intervals
                 "fromDate": from_date,
                 "toDate": to_date
             }
-        else:
-            # Daily data
-            url = f"{self.base_url}/charts/historical"
-            payload = {
-                "securityId": security_id,
-                "exchangeSegment": exchange_segment,
-                "instrument": instrument,
-                "fromDate": from_date,
-                "toDate": to_date
-            }
-        
-        try:
-            response = requests.post(url, headers=self.headers, json=payload)
+            
+            logger.info(f"Fetching intraday data for {security_id} from {from_date} to {to_date}")
+            
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
+            
+            # Check if we have data
+            if not data or 'open' not in data or len(data['open']) == 0:
+                logger.warning(f"No intraday data returned for {security_id}")
+                return None
             
             # Convert to DataFrame
             df = pd.DataFrame({
@@ -173,79 +238,40 @@ class DhanAPI:
                 'volume': data['volume'],
                 'timestamp': pd.to_datetime(data['timestamp'], unit='s')
             })
+            
+            # Handle potential NaN values in the data
+            df = df.replace([np.inf, -np.inf], np.nan)
+            df = df.ffill()  # Forward fill any NaN values
+            
             df.set_index('timestamp', inplace=True)
+            
+            logger.info(f"Fetched {len(df)} intraday bars for {security_id}")
             return df
             
         except Exception as e:
-            logger.error(f"Error fetching historical data: {e}")
-            return None
-    
-    def get_ltp_data(self, instruments):
-        url = f"{self.base_url}/marketfeed/ltp"
-        payload = instruments
-        
-        try:
-            response = requests.post(url, headers=self.headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error(f"Error fetching LTP data: {e}")
+            logger.error(f"Error fetching intraday data: {e}")
+            logger.error(traceback.format_exc())
             return None
 
 # Supabase Client
 class SupabaseClient:
     def __init__(self, supabase_url, supabase_key):
-        self.supabase = create_client(supabase_url, supabase_key)
-    
-    def create_tables(self):
-        """Create tables using SQL execution instead of deprecated create() method"""
         try:
-            # Create historical data table
-            create_historical_table = """
-            CREATE TABLE IF NOT EXISTS historical_data (
-                id SERIAL PRIMARY KEY,
-                security_id VARCHAR(50) NOT NULL,
-                exchange_segment VARCHAR(20) NOT NULL,
-                timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-                open DECIMAL(18, 4) NOT NULL,
-                high DECIMAL(18, 4) NOT NULL,
-                low DECIMAL(18, 4) NOT NULL,
-                close DECIMAL(18, 4) NOT NULL,
-                volume BIGINT NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                UNIQUE(security_id, exchange_segment, timestamp)
-            );
-            """
-            
-            # Create signals table
-            create_signals_table = """
-            CREATE TABLE IF NOT EXISTS signals (
-                id SERIAL PRIMARY KEY,
-                security_id VARCHAR(50) NOT NULL,
-                exchange_segment VARCHAR(20) NOT NULL,
-                timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-                signal_type VARCHAR(10) NOT NULL,
-                price DECIMAL(18, 4) NOT NULL,
-                details JSONB NOT NULL,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-            );
-            """
-            
-            # Execute SQL
-            self.supabase.rpc('exec_sql', {'query': create_historical_table}).execute()
-            self.supabase.rpc('exec_sql', {'query': create_signals_table}).execute()
-            
-            logger.info("Tables created successfully")
-            
+            self.supabase = create_client(supabase_url, supabase_key)
+            logger.info("Supabase client initialized successfully")
         except Exception as e:
-            logger.error(f"Error creating tables: {e}")
-            # Fallback: tables will be created on first insert
+            logger.error(f"Error initializing Supabase client: {e}")
+            raise
     
     def store_historical_data(self, security_id, exchange_segment, data):
         try:
             # Prepare data for insertion
             records = []
             for timestamp, row in data.iterrows():
+                # Skip rows with NaN values
+                if pd.isna(row['open']) or pd.isna(row['high']) or pd.isna(row['low']) or pd.isna(row['close']):
+                    continue
+                    
                 record = {
                     "security_id": security_id,
                     "exchange_segment": exchange_segment,
@@ -255,19 +281,26 @@ class SupabaseClient:
                     "low": float(row['low']),
                     "close": float(row['close']),
                     "volume": int(row['volume']),
-                    "created_at": datetime.now().isoformat()
+                    "created_at": datetime.now().isoformat(),
+                    "timeframe": "3min"  # Add timeframe information
                 }
                 records.append(record)
             
-            # Insert data using upsert
-            response = self.supabase.table("historical_data").upsert(records).execute()
-            logger.info(f"Stored {len(records)} historical data records")
-            return response
+            # Insert data in batches to avoid payload size issues
+            batch_size = 100
+            for i in range(0, len(records), batch_size):
+                batch = records[i:i+batch_size]
+                response = self.supabase.table("historical_data").upsert(batch).execute()
+                logger.info(f"Stored batch of {len(batch)} historical data records")
+            
+            return True
         except Exception as e:
             logger.error(f"Error storing historical data: {e}")
-            return None
+            logger.error(traceback.format_exc())
+            return False
     
-    def get_historical_data(self, security_id, exchange_segment, days=30):
+    def get_historical_data(self, security_id, exchange_segment, days=1):
+        """Get historical data for the last specified days (default 1 day for intraday)"""
         try:
             from_date = (datetime.now() - timedelta(days=days)).isoformat()
             
@@ -283,8 +316,17 @@ class SupabaseClient:
                 df = pd.DataFrame(response.data)
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 df.set_index('timestamp', inplace=True)
+                
+                # Ensure we have the required columns
+                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                for col in required_cols:
+                    if col not in df.columns:
+                        df[col] = np.nan
+                
+                logger.info(f"Retrieved {len(df)} historical records from Supabase")
                 return df
             else:
+                logger.warning("No historical data found in Supabase")
                 return None
         except Exception as e:
             logger.error(f"Error fetching historical data from Supabase: {e}")
@@ -293,7 +335,7 @@ class SupabaseClient:
     def store_signal(self, signal):
         try:
             response = self.supabase.table("signals").insert(signal).execute()
-            logger.info(f"Stored signal: {signal}")
+            logger.info(f"Stored signal: {signal['signal_type']} at {signal['timestamp']}")
             return response
         except Exception as e:
             logger.error(f"Error storing signal: {e}")
@@ -375,12 +417,6 @@ class VOBTradingSystem:
                 chat_id=st.secrets["TELEGRAM_CHAT_ID"]
             )
             
-            # Try to create tables (will work if RPC is enabled)
-            try:
-                self.supabase_client.create_tables()
-            except:
-                logger.warning("Could not create tables via RPC, they will be created on first insert")
-            
             self.initialized = True
             logger.info("All clients initialized successfully")
             
@@ -391,6 +427,7 @@ class VOBTradingSystem:
             
         except Exception as e:
             logger.error(f"Error initializing clients: {e}")
+            logger.error(traceback.format_exc())
             st.error(f"Failed to initialize: {e}")
             return False
     
@@ -410,60 +447,73 @@ class VOBTradingSystem:
         return market_open <= current_time <= market_close
     
     def fetch_nifty_data(self):
-        """Fetch Nifty 50 data (Security ID for Nifty 50 is 13 in IDX_I segment)"""
+        """Fetch Nifty 50 intraday data (Security ID for Nifty 50 is 13 in IDX_I segment)"""
         if not self.initialized:
             logger.error("Clients not initialized")
             return None
         
         try:
-            # Fetch historical data from Dhan for Nifty 50
-            end_date = datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            # For intraday data, we only need the current day's data
+            current_date = datetime.now().strftime("%Y-%m-%d")
             
-            historical_data = self.dhan_client.get_historical_data(
+            # Get data for the current day with 3-minute intervals
+            intraday_data = self.dhan_client.get_intraday_data(
                 security_id="13",  # Nifty 50 security ID
                 exchange_segment="IDX_I",  # Index segment
                 instrument="INDEX",
-                from_date=start_date,
-                to_date=end_date
+                from_date=current_date,
+                to_date=current_date,
+                interval="3"  # 3-minute intervals
             )
             
-            if historical_data is not None:
+            if intraday_data is not None and len(intraday_data) > 0:
                 # Store in Supabase
-                self.supabase_client.store_historical_data(
+                success = self.supabase_client.store_historical_data(
                     security_id="13",
                     exchange_segment="IDX_I",
-                    data=historical_data
+                    data=intraday_data
                 )
                 
-                return historical_data
+                if success:
+                    logger.info(f"Stored {len(intraday_data)} intraday bars in Supabase")
+                    return intraday_data
+                else:
+                    logger.error("Failed to store intraday data in Supabase")
+                    return None
             else:
-                logger.error("Failed to fetch Nifty historical data")
+                logger.error("Failed to fetch Nifty intraday data or no data returned")
                 return None
                 
         except Exception as e:
             logger.error(f"Error fetching Nifty data: {e}")
+            logger.error(traceback.format_exc())
             return None
     
     def check_nifty_signals(self):
-        """Check for VOB signals on Nifty 50"""
+        """Check for VOB signals on Nifty 50 using intraday data"""
         if not self.initialized:
             return []
         
         try:
-            # Get historical data from Supabase
-            historical_data = self.supabase_client.get_historical_data(
+            # Get intraday data from Supabase (last 1 day only for intraday)
+            intraday_data = self.supabase_client.get_historical_data(
                 security_id="13",
                 exchange_segment="IDX_I",
-                days=30
+                days=1  # Only need 1 day for intraday analysis
             )
             
-            if historical_data is None or historical_data.empty:
-                logger.warning("No historical data available for Nifty")
+            if intraday_data is None or intraday_data.empty:
+                logger.warning("No intraday data available for Nifty")
                 return []
             
-            # Run VOB indicator
-            vob = VOBIndicator(historical_data)
+            # Ensure we have enough data for VOB calculations
+            min_required_bars = 200 + 13 + 5  # ATR period + EMA period + buffer
+            if len(intraday_data) < min_required_bars:
+                logger.warning(f"Not enough intraday data for VOB analysis. Have {len(intraday_data)}, need at least {min_required_bars}")
+                return []
+            
+            # Run VOB indicator on intraday data
+            vob = VOBIndicator(intraday_data)
             signals = vob.process_vob_signals()
             
             # Check for new signals
@@ -481,13 +531,14 @@ class VOBTradingSystem:
                         "timestamp": signal_timestamp_str,
                         "signal_type": signal['type'],
                         "price": signal['price'],
-                        "details": json.dumps(signal)
+                        "details": json.dumps(signal),
+                        "timeframe": "3min"  # Add timeframe information
                     }
                     
                     self.supabase_client.store_signal(signal_record)
                     
                     # Send Telegram notification
-                    message = f"VOB {signal['type'].upper()} Signal detected on NIFTY!\n"
+                    message = f"VOB {signal['type'].upper()} Signal detected on NIFTY (3min)!\n"
                     message += f"Time: {signal['timestamp']}\n"
                     message += f"Price: {signal['price']:.2f}\n"
                     
@@ -496,6 +547,8 @@ class VOBTradingSystem:
                     else:
                         message += f"Base: {signal['base_price']:.2f}, High: {signal['high_price']:.2f}"
                     
+                    message += f"\nATR: {signal['atr_value']:.2f}"
+                    
                     self.telegram_bot.send_message(message)
                     new_signals.append(signal)
             
@@ -503,6 +556,7 @@ class VOBTradingSystem:
             
         except Exception as e:
             logger.error(f"Error checking Nifty signals: {e}")
+            logger.error(traceback.format_exc())
             return []
     
     def run_analysis(self):
@@ -511,9 +565,9 @@ class VOBTradingSystem:
             logger.info("Outside market hours, skipping analysis")
             return
         
-        logger.info("Running Nifty analysis...")
+        logger.info("Running Nifty analysis with 3-minute intraday data...")
         
-        # Fetch latest data
+        # Fetch latest intraday data
         data = self.fetch_nifty_data()
         
         if data is not None:
@@ -576,8 +630,9 @@ class VOBTradingSystem:
 
 # Streamlit App
 def main():
-    st.title("Nifty VOB Trading System")
+    st.title("Nifty 50 VOB Trading System (3-Minute Intraday)")
     st.info("System automatically runs every 2 minutes during market hours (9:01 to 15:41 IST, Mon-Fri)")
+    st.info("Using 3-minute intraday data for accurate VOB signal detection")
     
     # Initialize trading system
     trading_system = VOBTradingSystem()
@@ -605,12 +660,14 @@ def main():
         st.info(f"**Last Analysis Run:** {last_run_str}")
     
     # Display recent signals
-    st.header("Recent Nifty Signals")
+    st.header("Recent Nifty Signals (3-Minute Intraday)")
     if trading_system.initialized:
         recent_signals = trading_system.supabase_client.get_recent_signals(hours=24)
         if recent_signals:
             signals_df = pd.DataFrame(recent_signals)
-            st.dataframe(signals_df)
+            
+            # Display the signals
+            st.dataframe(signals_df[['timestamp', 'signal_type', 'price']])
             
             # Count signals by type
             bullish_count = len([s for s in recent_signals if s['signal_type'] == 'bullish'])
@@ -629,12 +686,13 @@ def main():
     st.sidebar.info("""
     **Status:** ✅ Running
     **Focus:** Nifty 50
+    **Data:** 3-minute intraday
     **Interval:** 2 minutes
     **Market Hours:** 9:01-15:41 IST (Mon-Fri)
     **Auto-run:** Enabled
     """)
     
-    # Clear history button (only button kept)
+    # Clear history button
     st.sidebar.header("Data Management")
     if st.sidebar.button("Clear All History", type="secondary"):
         if trading_system.clear_history():
