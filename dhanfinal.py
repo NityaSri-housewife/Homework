@@ -3,7 +3,7 @@ from streamlit_autorefresh import st_autorefresh
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time as dt_time
 import math
 from scipy.stats import norm
 from pytz import timezone
@@ -12,6 +12,28 @@ import io
 import json
 from supabase import create_client, Client
 import time
+
+# === Market Hours Check Function ===
+def is_market_hours():
+    """Check if current time is within market hours (Mon-Fri, 9:00 AM to 3:40 PM IST)"""
+    try:
+        # Get current time in IST
+        ist = timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        
+        # Check if it's a weekday (Monday=0, Friday=4)
+        if now.weekday() > 4:  # Saturday or Sunday
+            return False
+            
+        # Check if time is between 9:00 AM and 3:40 PM
+        market_start = dt_time(9, 0)
+        market_end = dt_time(15, 40)
+        current_time = now.time()
+        
+        return market_start <= current_time <= market_end
+    except Exception as e:
+        st.error(f"Error checking market hours: {e}")
+        return False
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -582,6 +604,14 @@ def display_call_log_book():
 def analyze():
     """Main analysis function"""
     st.title("Nifty Options Analyzer with OI + Price Signals")
+    
+    # Check if it's market hours
+    if not is_market_hours():
+        ist = timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        st.info(f"⏰ Market is currently closed. Trading hours: Mon-Fri, 9:00 AM - 3:40 PM IST")
+        st.info(f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        return
     
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
