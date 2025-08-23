@@ -77,6 +77,8 @@ if 'historical_oi_data' not in st.session_state:
     st.session_state.historical_oi_data = pd.DataFrame()
 if 'last_cleanup_time' not in st.session_state:
     st.session_state.last_cleanup_time = None
+if 'previous_price' not in st.session_state:
+    st.session_state.previous_price = None
 
 # Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
@@ -240,6 +242,30 @@ def store_oi_price_data(price, oi, signal):
     except Exception as e:
         return False
 
+def store_options_chain_summary(data):
+    """Store options chain summary in Supabase"""
+    if supabase is None:
+        return False
+    
+    try:
+        # Check if table exists first
+        try:
+            supabase.table("options_chain_summary").select("count").limit(1).execute()
+        except:
+            # Table doesn't exist, create it
+            st.info("Creating options_chain_summary table in Supabase...")
+            # You might need to create this table manually in Supabase
+            return False
+            
+        # Insert data
+        response = supabase.table("options_chain_summary").insert(data).execute()
+        if hasattr(response, 'data') and response.data:
+            return True
+        return False
+    except Exception as e:
+        st.warning(f"Could not store options chain summary: {e}")
+        return False
+
 def fetch_historical_oi_data(days=1):
     """Fetch historical OI and Price data from Supabase"""
     if supabase is None:
@@ -266,6 +292,28 @@ def fetch_historical_oi_data(days=1):
     except Exception as e:
         return pd.DataFrame()
 
+def delete_all_history():
+    """Delete all historical data from Supabase"""
+    if supabase is None:
+        return False
+    
+    try:
+        # Delete from oi_price_history table
+        if check_and_create_supabase_table():
+            response = supabase.table("oi_price_history").delete().neq("id", "0").execute()
+        
+        # Delete from options_chain_summary table
+        try:
+            response = supabase.table("options_chain_summary").delete().neq("id", "0").execute()
+        except:
+            pass  # Table might not exist
+        
+        st.session_state.last_cleanup_time = datetime.now(timezone("Asia/Kolkata"))
+        return True
+    except Exception as e:
+        st.error(f"Error deleting history: {e}")
+        return False
+
 def cleanup_old_data():
     """Cleanup old data at 3:40 PM daily"""
     now = datetime.now(timezone("Asia/Kolkata"))
@@ -275,16 +323,7 @@ def cleanup_old_data():
         st.session_state.last_cleanup_time is None or 
         st.session_state.last_cleanup_time.date() != now.date()
     ):
-        if supabase is not None and check_and_create_supabase_table():
-            try:
-                # Delete all data from the table
-                response = supabase.table("oi_price_history").delete().neq("id", "0").execute()
-                st.session_state.last_cleanup_time = now
-                st.success("🗑️ Database cleaned up successfully")
-                return True
-            except Exception as e:
-                st.warning(f"Database cleanup failed: {e}")
-                return False
+        return delete_all_history()
     return False
 
 # === Telegram Config ===
@@ -415,6 +454,19 @@ def classify_oi_price_signal(current_price, previous_price, current_oi, previous
         return "Long Covering"
     elif price_change > 0 and oi_change < 0:
         return "Short Covering"
+    else:
+        return "Neutral"
+
+def calculate_market_logic(pcr, price_change):
+    """Calculate market logic based on PCR and price movement"""
+    if pcr > 1 and price_change < 0:
+        return "Bearish"
+    elif pcr > 1 and price_change > 0:
+        return "Bullish"
+    elif pcr < 1 and price_change > 0:
+        return "Bullish"
+    elif pcr < 1 and price_change < 0:
+        return "Bearish"
     else:
         return "Neutral"
 
@@ -633,6 +685,12 @@ def analyze():
             
         vix_value = get_vix_value()
 
+        # Calculate price change
+        price_change = 0
+        if st.session_state.previous_price is not None:
+            price_change = underlying - st.session_state.previous_price
+        st.session_state.previous_price = underlying
+
         # Set dynamic PCR thresholds based on VIX
         if vix_value > 12:
             st.session_state.pcr_threshold_bull = 2.0
@@ -650,7 +708,7 @@ def analyze():
             return
 
         # Display market info
-        st.markdown(f"### 📍 Spot Price: {underlying}")
+        st.markdown(f"### 📍 Spot Price: {underlying} ({'↑' if price_change > 0 else '↓' if price_change < 0 else '→'} {abs(price_change):.2f})")
         st.markdown(f"### 📊 VIX: {vix_value} ({volatility_status}) | PCR Thresholds: Bull >{st.session_state.pcr_threshold_bull} | Bear <{st.session_state.pcr_threshold_bear}")
 
         # Store current data in Supabase
@@ -812,6 +870,12 @@ def analyze():
                 "Neutral"
             )
         )
+        
+        # Calculate Market Logic
+        df['Market_Logic'] = df.apply(
+            lambda row: calculate_market_logic(row['PCR'], price_change), 
+            axis=1
+        )
 
         # Calculate bias scores
         weights = {
@@ -848,7 +912,8 @@ def analyze():
                 "Signal_CE": row['Signal_CE'],
                 "Signal_PE": row['Signal_PE'],
                 "PCR": row['PCR'],
-                "PCR_Signal": row['PCR_Signal']
+                "PCR_Signal": row['PCR_Signal'],
+                "Market_Logic": row['Market_Logic']
             }
 
             for k in row_data:
@@ -862,6 +927,17 @@ def analyze():
             bias_results.append(row_data)
 
         df_summary = pd.DataFrame(bias_results)
+        
+        # Check for hedging alerts
+        total_pcr = total_oi_pe / total_oi_ce if total_oi_ce > 0 else 0
+        if total_pcr > 1 and price_change < 0:
+            alert_msg = "⚠️ HEDGING ALERT: Put PCR > Call PCR + Price Falling - Be careful!"
+            st.warning(alert_msg)
+            send_telegram_message(alert_msg)
+        elif total_pcr < 1 and price_change > 0:
+            alert_msg = "⚠️ HEDGING ALERT: Call PCR > Put PCR + Price Rising - Be careful!"
+            st.warning(alert_msg)
+            send_telegram_message(alert_msg)
         
         # Record PCR history
         for _, row in df_summary.iterrows():
@@ -905,6 +981,13 @@ def analyze():
         if st.sidebar.button("Refresh Historical Data"):
             st.session_state.historical_oi_data = fetch_historical_oi_data()
             st.rerun()
+            
+        # Delete History button
+        if st.sidebar.button("🗑️ Delete History", type="secondary"):
+            if delete_all_history():
+                st.sidebar.success("All history deleted successfully!")
+                st.session_state.historical_oi_data = pd.DataFrame()
+                st.rerun()
 
         # Option Chain Summary with OI + Price Signals
         with st.expander("📊 Option Chain Summary with OI + Price Signals", expanded=True):
@@ -920,6 +1003,12 @@ def analyze():
             - 🟡 **Long Covering**: Price ↓ + OI ↓ (Bearish unwinding)
             - 🔵 **Short Covering**: Price ↑ + OI ↓ (Bullish unwinding)
             - ⚪ **Neutral**: No significant movement
+            
+            ℹ️ **Market Logic**:
+            - Put PCR > Call PCR + Price Falling → Bearish
+            - Put PCR > Call PCR + Price Rising → Bullish
+            - Call PCR > Put PCR + Price Rising → Bullish
+            - Call PCR > Put PCR + Price Falling → Bearish
             """)
             
             def color_pcr(val):
@@ -941,12 +1030,27 @@ def analyze():
                     return 'background-color: #87CEFA; color: black'
                 else:
                     return 'background-color: #F5F5F5; color: black'
+                    
+            def color_market_logic(val):
+                if val == "Bullish":
+                    return 'background-color: #90EE90; color: black'
+                elif val == "Bearish":
+                    return 'background-color: #FFB6C1; color: black'
+                else:
+                    return 'background-color: #F5F5F5; color: black'
 
             styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(
                 color_signal, subset=['Signal_CE', 'Signal_PE']
-            )
+            ).applymap(color_market_logic, subset=['Market_Logic'])
             
             st.dataframe(styled_df, use_container_width=True, height=400)
+            
+            # Store options chain summary in Supabase
+            summary_data = df_summary.copy()
+            summary_data['timestamp'] = now.isoformat()
+            summary_data['underlying_price'] = underlying
+            summary_data['price_change'] = price_change
+            store_options_chain_summary(summary_data.to_dict('records'))
         
         # Trade Log
         if st.session_state.trade_log:
