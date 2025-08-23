@@ -45,8 +45,6 @@ def init_supabase():
 supabase = init_supabase()
 
 # Initialize session state variables
-if 'price_data' not in st.session_state:
-    st.session_state.price_data = pd.DataFrame(columns=["Time", "Spot"])
 if 'trade_log' not in st.session_state:
     st.session_state.trade_log = []
 if 'call_log_book' not in st.session_state:
@@ -64,9 +62,9 @@ if 'historical_oi_data' not in st.session_state:
 
 # Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
-    st.session_state.pcr_threshold_bull = 2.0
+    st.session_state.pcr_threshold_bull = 1.2
 if 'pcr_threshold_bear' not in st.session_state:
-    st.session_state.pcr_threshold_bear = 0.4
+    st.session_state.pcr_threshold_bear = 0.7
 if 'use_pcr_filter' not in st.session_state:
     st.session_state.use_pcr_filter = True
 if 'pcr_history' not in st.session_state:
@@ -123,10 +121,10 @@ def get_vix_value():
             return data["data"]["IDX_I"]["21"]["last_price"]
         else:
             st.warning("Failed to get VIX value from Dhan API, using default value")
-            return 11  # Default value
+            return 11.73  # Default value
     except Exception as e:
         st.warning(f"Error getting VIX value: {e}, using default value")
-        return 11  # Default value
+        return 11.73  # Default value
 
 def get_option_chain(underlying_scrip=13, underlying_seg="IDX_I", expiry_date=None):
     """Get option chain data from Dhan API"""
@@ -455,46 +453,52 @@ def handle_export_data(df_summary, underlying):
             st.session_state.export_data = False
             st.rerun()
 
-def plot_price_with_sr():
-    """Plot price action with support/resistance zones"""
-    if len(st.session_state.price_data) > 1:
-        fig = go.Figure()
-        
-        # Add price line
-        fig.add_trace(go.Scatter(
-            x=st.session_state.price_data['Time'],
-            y=st.session_state.price_data['Spot'],
-            mode='lines+markers',
-            name='Nifty Spot',
-            line=dict(color='blue', width=2)
-        ))
-        
-        # Add support and resistance zones if available
-        support_zone = st.session_state.support_zone
-        resistance_zone = st.session_state.resistance_zone
-        
-        if support_zone[0] is not None and support_zone[1] is not None:
-            fig.add_hrect(
-                y0=support_zone[0], y1=support_zone[1],
-                fillcolor="green", opacity=0.2,
-                line_width=0, name="Support Zone"
-            )
-        
-        if resistance_zone[0] is not None and resistance_zone[1] is not None:
-            fig.add_hrect(
-                y0=resistance_zone[0], y1=resistance_zone[1],
-                fillcolor="red", opacity=0.2,
-                line_width=0, name="Resistance Zone"
-            )
-        
-        fig.update_layout(
-            title="Nifty Price Action with Support/Resistance Zones",
-            xaxis_title="Time",
-            yaxis_title="Price",
-            template="plotly_white"
+def plot_support_resistance_zones():
+    """Plot support and resistance zones only (no price action)"""
+    support_zone = st.session_state.support_zone
+    resistance_zone = st.session_state.resistance_zone
+    
+    fig = go.Figure()
+    
+    # Add support and resistance zones if available
+    if support_zone[0] is not None and support_zone[1] is not None:
+        fig.add_hrect(
+            y0=support_zone[0], y1=support_zone[1],
+            fillcolor="green", opacity=0.3,
+            line_width=0, name="Support Zone",
+            annotation_text=f"Support: {support_zone[0]} - {support_zone[1]}",
+            annotation_position="bottom left"
         )
-        
-        st.plotly_chart(fig, use_container_width=True)
+    
+    if resistance_zone[0] is not None and resistance_zone[1] is not None:
+        fig.add_hrect(
+            y0=resistance_zone[0], y1=resistance_zone[1],
+            fillcolor="red", opacity=0.3,
+            line_width=0, name="Resistance Zone",
+            annotation_text=f"Resistance: {resistance_zone[0]} - {resistance_zone[1]}",
+            annotation_position="top left"
+        )
+    
+    # Add current price line
+    underlying = get_nifty_underlying_value()
+    if underlying:
+        fig.add_hline(
+            y=underlying, 
+            line_dash="dash", 
+            line_color="blue",
+            annotation_text=f"Current Price: {underlying}",
+            annotation_position="bottom right"
+        )
+    
+    fig.update_layout(
+        title="Support and Resistance Zones (Price Action Removed)",
+        xaxis_title="Time",
+        yaxis_title="Price",
+        template="plotly_white",
+        height=400
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 def auto_update_call_log(underlying):
     """Auto update call log with current price"""
@@ -829,22 +833,18 @@ def analyze():
         st.session_state.support_zone = support_zone
         st.session_state.resistance_zone = resistance_zone
 
-        # Update price history
-        current_time_str = now.strftime("%H:%M:%S")
-        new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-        st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
-
+        # === Main Display ===
+        st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
+        
         # Format support/resistance strings
         support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) and None not in support_zone else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) and None not in resistance_zone else "N/A"
-
-        # === Main Display ===
-        st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
+        
         st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
         st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
         
-        # Plot price action
-        plot_price_with_sr()
+        # Plot support/resistance zones only (no price action)
+        plot_support_resistance_zones()
 
         # Display Supabase status
         st.sidebar.markdown("### 📦 Supabase Status")
