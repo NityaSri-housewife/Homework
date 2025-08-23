@@ -192,7 +192,7 @@ class DhanAPI:
             logger.error(f"Error fetching LTP data: {e}")
             return None
 
-# Supabase Client - FIXED VERSION
+# Supabase Client
 class SupabaseClient:
     def __init__(self, supabase_url, supabase_key):
         self.supabase = create_client(supabase_url, supabase_key)
@@ -352,6 +352,8 @@ class VOBTradingSystem:
         self.initialized = False
         self.scheduler_thread = None
         self.running = False
+        self.last_run_time = None
+        self.last_signals = []
         
     def initialize_clients(self):
         try:
@@ -381,6 +383,10 @@ class VOBTradingSystem:
             
             self.initialized = True
             logger.info("All clients initialized successfully")
+            
+            # Start the scheduler automatically
+            self.start_scheduler()
+            
             return True
             
         except Exception as e:
@@ -389,17 +395,17 @@ class VOBTradingSystem:
             return False
     
     def is_market_hours(self):
-        """Check if current time is within Indian market hours (Mon-Fri, 9:00 to 15:40)"""
+        """Check if current time is within Indian market hours (Mon-Fri, 9:01 to 15:41)"""
         now = datetime.now(INDIAN_TZ)
         
         # Check if it's a weekday (Monday=0, Friday=4)
         if now.weekday() > 4:
             return False
         
-        # Check if it's within market hours
+        # Check if it's within market hours (9:01 to 15:41)
         current_time = now.time()
-        market_open = datetime.strptime('09:00', '%H:%M').time()
-        market_close = datetime.strptime('15:40', '%H:%M').time()
+        market_open = datetime.strptime('09:01', '%H:%M').time()
+        market_close = datetime.strptime('15:41', '%H:%M').time()
         
         return market_open <= current_time <= market_close
     
@@ -516,8 +522,12 @@ class VOBTradingSystem:
             
             if signals:
                 logger.info(f"Found {len(signals)} new signals")
+                self.last_signals = signals
             else:
                 logger.info("No new signals detected")
+                self.last_signals = []
+            
+            self.last_run_time = datetime.now(INDIAN_TZ)
     
     def start_scheduler(self):
         """Start the scheduler to run analysis every 2 minutes during market hours"""
@@ -530,8 +540,9 @@ class VOBTradingSystem:
         def scheduler_loop():
             schedule.every(2).minutes.do(self.run_analysis)
             
-            # Run immediately on start
-            self.run_analysis()
+            # Run immediately on start if within market hours
+            if self.is_market_hours():
+                self.run_analysis()
             
             while self.running:
                 schedule.run_pending()
@@ -540,7 +551,7 @@ class VOBTradingSystem:
         self.scheduler_thread = threading.Thread(target=scheduler_loop)
         self.scheduler_thread.daemon = True
         self.scheduler_thread.start()
-        logger.info("Scheduler started")
+        logger.info("Auto-scheduler started (runs every 2 minutes during market hours)")
     
     def stop_scheduler(self):
         """Stop the scheduler"""
@@ -566,58 +577,32 @@ class VOBTradingSystem:
 # Streamlit App
 def main():
     st.title("Nifty VOB Trading System")
+    st.info("System automatically runs every 2 minutes during market hours (9:01 to 15:41 IST, Mon-Fri)")
     
     # Initialize trading system
     trading_system = VOBTradingSystem()
     
-    # Sidebar configuration
-    st.sidebar.header("Configuration")
-    
-    if st.sidebar.button("Initialize System"):
-        with st.spinner("Initializing clients..."):
+    # Auto-initialize on app start
+    if not trading_system.initialized:
+        with st.spinner("Initializing system..."):
             if trading_system.initialize_clients():
-                st.success("System initialized!")
+                st.success("System initialized and auto-scheduler started!")
             else:
                 st.error("Failed to initialize system. Check your secrets.")
+                st.info("Make sure you have set all required secrets in .streamlit/secrets.toml")
+                return
     
-    if not trading_system.initialized:
-        st.warning("Please initialize the system first")
-        st.info("Make sure you have set all required secrets in .streamlit/secrets.toml")
-        return
+    # Display market status
+    st.header("Market Status")
+    market_status = "🟢 OPEN" if trading_system.is_market_hours() else "🔴 CLOSED"
+    st.info(f"**Market Status:** {market_status}")
     
-    # Main operations
-    st.header("Nifty 50 Analysis")
+    current_time = datetime.now(INDIAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    st.info(f"**Indian Time:** {current_time}")
     
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("Run Analysis Now"):
-            with st.spinner("Analyzing Nifty data..."):
-                signals = trading_system.check_nifty_signals()
-                
-                if signals:
-                    st.success(f"Found {len(signals)} new signals!")
-                    for signal in signals:
-                        st.json(signal)
-                else:
-                    st.info("No new signals detected")
-    
-    with col2:
-        if st.button("Start Auto Analysis"):
-            trading_system.start_scheduler()
-            st.success("Auto analysis started! Running every 2 minutes during market hours.")
-    
-    with col3:
-        if st.button("Stop Auto Analysis"):
-            trading_system.stop_scheduler()
-            st.info("Auto analysis stopped.")
-    
-    st.header("History Management")
-    if st.button("Clear All History", type="secondary"):
-        if trading_system.clear_history():
-            st.success("History cleared successfully")
-        else:
-            st.error("Failed to clear history")
+    if trading_system.last_run_time:
+        last_run_str = trading_system.last_run_time.strftime("%Y-%m-%d %H:%M:%S")
+        st.info(f"**Last Analysis Run:** {last_run_str}")
     
     # Display recent signals
     st.header("Recent Nifty Signals")
@@ -626,26 +611,37 @@ def main():
         if recent_signals:
             signals_df = pd.DataFrame(recent_signals)
             st.dataframe(signals_df)
+            
+            # Count signals by type
+            bullish_count = len([s for s in recent_signals if s['signal_type'] == 'bullish'])
+            bearish_count = len([s for s in recent_signals if s['signal_type'] == 'bearish'])
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Bullish Signals Today", bullish_count)
+            with col2:
+                st.metric("Bearish Signals Today", bearish_count)
         else:
-            st.info("No signals in the last 24 hours")
-    
-    # Display market status
-    st.sidebar.header("Market Status")
-    market_status = "🟢 OPEN" if trading_system.is_market_hours() else "🔴 CLOSED"
-    st.sidebar.info(f"**Market Status:** {market_status}")
-    
-    current_time = datetime.now(INDIAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    st.sidebar.info(f"**Indian Time:** {current_time}")
+            st.info("No signals detected in the last 24 hours")
     
     # System status
     st.sidebar.header("System Status")
     st.sidebar.info("""
-    **Initialized:** ✅
-    **Auto Analysis:** Active
+    **Status:** ✅ Running
     **Focus:** Nifty 50
     **Interval:** 2 minutes
-    **Market Hours:** 9:00-15:40 (Mon-Fri)
+    **Market Hours:** 9:01-15:41 IST (Mon-Fri)
+    **Auto-run:** Enabled
     """)
+    
+    # Clear history button (only button kept)
+    st.sidebar.header("Data Management")
+    if st.sidebar.button("Clear All History", type="secondary"):
+        if trading_system.clear_history():
+            st.sidebar.success("History cleared successfully")
+            st.experimental_rerun()
+        else:
+            st.sidebar.error("Failed to clear history")
 
 if __name__ == "__main__":
     main()
