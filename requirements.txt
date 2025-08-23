@@ -34,6 +34,14 @@ numpy
 ta-lib
 matplotlib
 schedule
+gradio
+requests
+pandas
+numpy
+scipy
+pytz
+plotly
+openpyxl
 
 # Core packages
 streamlit>=1.28.0
