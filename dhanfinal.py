@@ -29,17 +29,9 @@ def init_supabase():
         supabase_url = st.secrets["supabase"]["url"]
         supabase_key = st.secrets["supabase"]["key"]
         client = create_client(supabase_url, supabase_key)
-        
-        # Check if table exists, create if not
-        try:
-            client.table("oi_price_history").select("count").limit(1).execute()
-        except Exception as e:
-            st.warning("Creating oi_price_history table...")
-            # You'll need to manually create this table in Supabase with columns:
-            # id (bigint, auto-increment), timestamp (timestamp), price (float), oi (float), signal (text)
         return client
     except:
-        st.error("Supabase credentials not found. Please check your secrets.toml file.")
+        st.warning("Supabase credentials not found. Some features will be limited.")
         return None
 
 supabase = init_supabase()
@@ -61,6 +53,8 @@ if 'previous_oi_data' not in st.session_state:
     st.session_state.previous_oi_data = None
 if 'historical_oi_data' not in st.session_state:
     st.session_state.historical_oi_data = pd.DataFrame()
+if 'last_cleanup_time' not in st.session_state:
+    st.session_state.last_cleanup_time = None
 
 # Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
@@ -179,13 +173,37 @@ def get_option_chain(underlying_scrip=13, underlying_seg="IDX_I", expiry_date=No
         return None, None
 
 # === Supabase Functions ===
-def store_oi_price_data(price, oi, signal):
-    """Store OI and Price data in Supabase table"""
+def check_and_create_supabase_table():
+    """Check if table exists and create it if not"""
     if supabase is None:
-        st.warning("Supabase not initialized - skipping data storage")
         return False
     
     try:
+        # Try to select from table to check if it exists
+        supabase.table("oi_price_history").select("count").limit(1).execute()
+        return True
+    except:
+        try:
+            # Table doesn't exist, create it
+            st.info("Creating oi_price_history table in Supabase...")
+            
+            # Create table using SQL (you might need to do this manually in Supabase dashboard)
+            # For now, we'll just return False and handle it gracefully
+            return False
+        except Exception as e:
+            st.warning(f"Could not create table: {e}")
+            return False
+
+def store_oi_price_data(price, oi, signal):
+    """Store OI and Price data in Supabase table"""
+    if supabase is None:
+        return False
+    
+    try:
+        # Check if table exists first
+        if not check_and_create_supabase_table():
+            return False
+            
         data = {
             "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
             "price": float(price),
@@ -195,20 +213,21 @@ def store_oi_price_data(price, oi, signal):
         
         response = supabase.table("oi_price_history").insert(data).execute()
         if hasattr(response, 'data') and response.data:
-            st.success("✅ Data stored in Supabase successfully")
             return True
         return False
     except Exception as e:
-        st.warning(f"Supabase storage skipped: {e}")
         return False
 
 def fetch_historical_oi_data(days=1):
     """Fetch historical OI and Price data from Supabase"""
     if supabase is None:
-        st.warning("Supabase not initialized - using empty historical data")
         return pd.DataFrame()
     
     try:
+        # Check if table exists first
+        if not check_and_create_supabase_table():
+            return pd.DataFrame()
+            
         # Get data from today and specified previous days
         start_date = (datetime.now() - pd.Timedelta(days=days)).isoformat()
         response = supabase.table("oi_price_history")\
@@ -223,29 +242,28 @@ def fetch_historical_oi_data(days=1):
             return df
         return pd.DataFrame()
     except Exception as e:
-        st.warning(f"Historical data fetch skipped: {e}")
         return pd.DataFrame()
 
-def delete_old_data(days_to_keep=1):
-    """Delete data older than specified days"""
-    if supabase is None:
-        return False
+def cleanup_old_data():
+    """Cleanup old data at 3:40 PM daily"""
+    now = datetime.now(timezone("Asia/Kolkata"))
     
-    try:
-        # Delete data older than specified days
-        cutoff_date = (datetime.now() - pd.Timedelta(days=days_to_keep)).isoformat()
-        response = supabase.table("oi_price_history")\
-            .delete()\
-            .lt("timestamp", cutoff_date)\
-            .execute()
-        
-        if hasattr(response, 'data'):
-            st.info(f"🗑️ Deleted {len(response.data)} old records")
-            return True
-        return False
-    except Exception as e:
-        st.warning(f"Old data deletion skipped: {e}")
-        return False
+    # Check if it's between 3:40 PM and 3:45 PM and we haven't cleaned up today
+    if (now.hour == 15 and 40 <= now.minute <= 45) and (
+        st.session_state.last_cleanup_time is None or 
+        st.session_state.last_cleanup_time.date() != now.date()
+    ):
+        if supabase is not None and check_and_create_supabase_table():
+            try:
+                # Delete all data from the table
+                response = supabase.table("oi_price_history").delete().neq("id", "0").execute()
+                st.session_state.last_cleanup_time = now
+                st.success("🗑️ Database cleaned up successfully")
+                return True
+            except Exception as e:
+                st.warning(f"Database cleanup failed: {e}")
+                return False
+    return False
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
@@ -317,8 +335,9 @@ def delta_volume_bias(price_diff, volume_diff, oi_diff):
 
 def determine_level(row):
     """Determine support/resistance level based on OI"""
-    ce_oi = row.get('oi', 0) if 'oi' in row else row.get('openInterest', 0)
-    pe_oi = row.get('oi', 0) if 'oi' in row else row.get('openInterest', 0)
+    # Use the correct column names for Dhan API
+    ce_oi = row.get('oi_CE', 0)
+    pe_oi = row.get('oi_PE', 0)
     
     if ce_oi > pe_oi * 1.5:
         return "Resistance"
@@ -335,6 +354,9 @@ def is_in_zone(price, zone):
 
 def get_support_resistance_zones(df, underlying):
     """Identify support and resistance zones based on OI"""
+    # Filter for strikes around current price
+    df = df[df['strikePrice'].between(underlying - 500, underlying + 500)]
+    
     df_support = df[df['Level'] == 'Support'].sort_values('strikePrice')
     df_resistance = df[df['Level'] == 'Resistance'].sort_values('strikePrice')
     
@@ -343,14 +365,16 @@ def get_support_resistance_zones(df, underlying):
     resistance_levels = df_resistance['strikePrice'].values
     
     if len(support_levels) > 0:
-        closest_support = min(support_levels, key=lambda x: abs(x - underlying))
-        support_zone = (closest_support - 50, closest_support + 50)
+        # Get the strongest support (highest OI)
+        strongest_support = df_support.loc[df_support['oi_PE'].idxmax()]['strikePrice']
+        support_zone = (strongest_support - 50, strongest_support + 50)
     else:
         support_zone = (None, None)
     
     if len(resistance_levels) > 0:
-        closest_resistance = min(resistance_levels, key=lambda x: abs(x - underlying))
-        resistance_zone = (closest_resistance - 50, closest_resistance + 50)
+        # Get the strongest resistance (highest OI)
+        strongest_resistance = df_resistance.loc[df_resistance['oi_CE'].idxmax()]['strikePrice']
+        resistance_zone = (strongest_resistance - 50, strongest_resistance + 50)
     else:
         resistance_zone = (None, None)
     
@@ -565,12 +589,11 @@ def analyze():
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
 
+        # Check for database cleanup at 3:40 PM
+        cleanup_old_data()
+
         # Fetch historical data from Supabase
         st.session_state.historical_oi_data = fetch_historical_oi_data(days=1)
-        
-        # Delete old data at the start of each day (keep only 1 day data)
-        if now.hour == 9 and now.minute < 5:
-            delete_old_data(days_to_keep=1)
 
         # Get underlying value and VIX from Dhan API
         underlying = get_nifty_underlying_value()
@@ -631,7 +654,7 @@ def analyze():
                 if ce_data:
                     ce_data['strikePrice'] = strike_price
                     # Map Dhan column names to expected names
-                    ce_data['openInterest'] = ce_data.get('oi', 0)
+                    ce_data['oi'] = ce_data.get('oi', 0)
                     ce_data['lastPrice'] = ce_data.get('last_price', 0)
                     ce_data['impliedVolatility'] = ce_data.get('implied_volatility', 0)
                     ce_data['changeinOpenInterest'] = ce_data.get('change_in_oi', 0)
@@ -643,7 +666,7 @@ def analyze():
                 if pe_data:
                     pe_data['strikePrice'] = strike_price
                     # Map Dhan column names to expected names
-                    pe_data['openInterest'] = pe_data.get('oi', 0)
+                    pe_data['oi'] = pe_data.get('oi', 0)
                     pe_data['lastPrice'] = pe_data.get('last_price', 0)
                     pe_data['impliedVolatility'] = pe_data.get('implied_volatility', 0)
                     pe_data['changeinOpenInterest'] = pe_data.get('change_in_oi', 0)
@@ -667,7 +690,7 @@ def analyze():
 
         # Filter strikes around ATM
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-        df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
+        df = df[df['strikePrice'].between(atm_strike - 500, atm_strike + 500)]
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         
         # Calculate T (time to expiry)
@@ -704,7 +727,7 @@ def analyze():
 
         # === OI + Price Signal Classification ===
         # Use the correct column names for Dhan API
-        current_oi_data = df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 'lastPrice_CE', 'lastPrice_PE']].copy()
+        current_oi_data = df[['strikePrice', 'oi_CE', 'oi_PE', 'lastPrice_CE', 'lastPrice_PE']].copy()
         
         # Initialize Signal columns
         df['Signal_CE'] = "Neutral"
@@ -719,7 +742,7 @@ def analyze():
                 # For CE (Call options)
                 try:
                     current_price_ce = row['lastPrice_CE']
-                    current_oi_ce = row['openInterest_CE']
+                    current_oi_ce = row['oi_CE']
                     
                     # Use the most recent historical data point
                     latest_historical = st.session_state.historical_oi_data.iloc[-1]
@@ -734,7 +757,7 @@ def analyze():
                 # For PE (Put options)
                 try:
                     current_price_pe = row['lastPrice_PE']
-                    current_oi_pe = row['openInterest_PE']
+                    current_oi_pe = row['oi_PE']
                     
                     df.at[index, 'Signal_PE'] = classify_oi_price_signal(
                         current_price_pe, latest_historical.get('price', 0), 
@@ -747,8 +770,8 @@ def analyze():
         st.session_state.previous_oi_data = current_oi_data
         
         # Calculate PCR
-        df['PCR'] = (df['openInterest_PE']) / (df['openInterest_CE'])
-        df['PCR'] = np.where(df['openInterest_CE'] == 0, 0, df['PCR'])
+        df['PCR'] = (df['oi_PE']) / (df['oi_CE'])
+        df['PCR'] = np.where(df['oi_CE'] == 0, 0, df['PCR'])
         df['PCR'] = df['PCR'].round(2)
         df['PCR_Signal'] = np.where(
             df['PCR'] > st.session_state.pcr_threshold_bull,
@@ -835,7 +858,7 @@ def analyze():
         st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
 
         # Format support/resistance strings
-        support_str = f"{support_zone[1]} to {support_zone[0]}" if all(support_zone) and None not in support_zone else "N/A"
+        support_str = f"{support_zone[0]} to {support_zone[1]}" if all(support_zone) and None not in support_zone else "N/A"
         resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) and None not in resistance_zone else "N/A"
 
         # === Main Display ===
