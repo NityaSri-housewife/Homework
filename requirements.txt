@@ -23,6 +23,16 @@ numpy
 requests
 streamlit
 supabase
+streamlit
+supabase
+python-dotenv
+requests
+websockets
+python-telegram-bot
+pandas
+numpy
+ta-lib
+matplotlib
 
 # Core packages
 streamlit>=1.28.0
