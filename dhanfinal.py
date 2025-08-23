@@ -30,16 +30,27 @@ def init_supabase():
         supabase_key = st.secrets["supabase"]["key"]
         client = create_client(supabase_url, supabase_key)
         
-        # Check if table exists, create if not
+        # Create table if it doesn't exist
         try:
+            # Check if table exists
             client.table("oi_price_history").select("count").limit(1).execute()
         except Exception as e:
             st.warning("Creating oi_price_history table...")
-            # You'll need to manually create this table in Supabase with columns:
-            # id (bigint, auto-increment), timestamp (timestamp), price (float), oi (float), signal (text)
+            # Execute raw SQL to create table
+            create_table_sql = """
+            CREATE TABLE IF NOT EXISTS oi_price_history (
+                id BIGSERIAL PRIMARY KEY,
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                price DOUBLE PRECISION,
+                oi DOUBLE PRECISION,
+                signal TEXT
+            );
+            """
+            client.rpc('exec_sql', {'sql': create_table_sql}).execute()
+            
         return client
-    except:
-        st.error("Supabase credentials not found. Please check your secrets.toml file.")
+    except Exception as e:
+        st.error(f"Supabase initialization error: {e}")
         return None
 
 supabase = init_supabase()
