@@ -392,14 +392,14 @@ class VOBTradingSystem:
         try:
             # Initialize Dhan API
             self.dhan_client = DhanAPI(
-                access_token=st.secrets["DHAN_ACCESS_TOKEN"],
-                client_id=st.secrets["DHAN_CLIENT_ID"]
+                access_token=st.secrets["dhan"]["access_token"],
+                client_id=st.secrets["dhan"]["client_id"]
             )
             
             # Initialize Supabase
             self.supabase_client = SupabaseClient(
-                supabase_url=st.secrets["SUPABASE_URL"],
-                supabase_key=st.secrets["SUPABASE_KEY"]
+                supabase_url=st.secrets["supabase"]["url"],
+                supabase_key=st.secrets["supabase"]["key"]
             )
             
             # Initialize Telegram Bot
