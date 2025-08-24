@@ -404,8 +404,8 @@ class VOBTradingSystem:
             
             # Initialize Telegram Bot
             self.telegram_bot = TelegramBot(
-                bot_token=st.secrets["TELEGRAM_BOT_TOKEN"],
-                chat_id=st.secrets["TELEGRAM_CHAT_ID"]
+                bot_token=st.secrets["telegram"]["TELEGRAM_BOT_TOKEN"],
+                chat_id=st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
             )
             
             self.initialized = True
