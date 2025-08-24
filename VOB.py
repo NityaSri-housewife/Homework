@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 # Indian timezone
 INDIAN_TZ = pytz.timezone('Asia/Kolkata')
 
-# VOB Indicator Class (updated for intraday data and NaN handling)
 class VOBIndicator:
     def __init__(self, data, length1=5, colBull='#26ba9f', colBear='#ba2646'):
         self.data = data.copy()
@@ -190,8 +189,6 @@ class VOBIndicator:
                     self.signals.append(signal)
         
         return self.signals
-
-# Dhan API Client
 class DhanAPI:
     def __init__(self, access_token, client_id):
         self.access_token = access_token
@@ -252,8 +249,6 @@ class DhanAPI:
             logger.error(f"Error fetching intraday data: {e}")
             logger.error(traceback.format_exc())
             return None
-
-# Supabase Client
 class SupabaseClient:
     def __init__(self, supabase_url, supabase_key):
         try:
@@ -369,8 +364,6 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Error clearing history: {e}")
             return False
-
-# Telegram Bot
 class TelegramBot:
     def __init__(self, bot_token, chat_id):
         self.bot_token = bot_token
@@ -383,8 +376,6 @@ class TelegramBot:
             logger.info(f"Sent Telegram message: {message}")
         except Exception as e:
             logger.error(f"Error sending Telegram message: {e}")
-
-# Main Trading System
 class VOBTradingSystem:
     def __init__(self):
         # Initialize from Streamlit secrets
@@ -432,20 +423,14 @@ class VOBTradingSystem:
             return False
     
     def is_market_hours(self):
-        """Check if current time is within Indian market hours (Mon-Fri, 9:01 to 15:41)"""
+        """Check if current time is within market hours (All days, 9:01 to 15:41)"""
         now = datetime.now(INDIAN_TZ)
-        
-        # Check if it's a weekday (Monday=0, Friday=4)
-        if now.weekday() > 4:
-            return False
-        
-        # Check if it's within market hours (9:01 to 15:41)
+
         current_time = now.time()
         market_open = datetime.strptime('09:01', '%H:%M').time()
         market_close = datetime.strptime('15:41', '%H:%M').time()
         
         return market_open <= current_time <= market_close
-    
     def fetch_nifty_data(self):
         """Fetch Nifty 50 intraday data (Security ID for Nifty 50 is 13 in IDX_I segment)"""
         if not self.initialized:
@@ -627,7 +612,6 @@ class VOBTradingSystem:
         except Exception as e:
             logger.error(f"Error clearing history: {e}")
             return False
-
 # Streamlit App
 def main():
     st.title("Nifty 50 VOB Trading System (3-Minute Intraday)")
