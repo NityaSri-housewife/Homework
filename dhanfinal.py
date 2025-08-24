@@ -12,28 +12,13 @@ import io
 import json
 from supabase import create_client, Client
 import time
+import threading
 
 # === Market Hours Check Function ===
 def is_market_hours():
-    """Check if current time is within market hours (Mon-Fri, 9:00 AM to 3:40 PM IST)"""
-    try:
-        # Get current time in IST
-        ist = timezone('Asia/Kolkata')
-        now = datetime.now(ist)
-        
-        # Check if it's a weekday (Monday=0, Friday=4)
-        if now.weekday() > 4:  # Saturday or Sunday
-            return False
-            
-        # Check if time is between 9:00 AM and 3:40 PM
-        market_start = dt_time(9, 0)
-        market_end = dt_time(15, 40)
-        current_time = now.time()
-        
-        return market_start <= current_time <= market_end
-    except Exception as e:
-        st.error(f"Error checking market hours: {e}")
-        return False
+    """Check if current time is within market hours - MODIFIED FOR TESTING"""
+    # Always return True for testing, regardless of day or time
+    return True
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -79,6 +64,14 @@ if 'last_cleanup_time' not in st.session_state:
     st.session_state.last_cleanup_time = None
 if 'previous_price' not in st.session_state:
     st.session_state.previous_price = None
+if 'support_zones' not in st.session_state:
+    st.session_state.support_zones = {}
+if 'resistance_zones' not in st.session_state:
+    st.session_state.resistance_zones = {}
+if 'active_trades' not in st.session_state:
+    st.session_state.active_trades = {}
+if 'black_day' not in st.session_state:
+    st.session_state.black_day = False
 
 # Initialize PCR settings with VIX-based defaults
 if 'pcr_threshold_bull' not in st.session_state:
@@ -89,6 +82,120 @@ if 'use_pcr_filter' not in st.session_state:
     st.session_state.use_pcr_filter = True
 if 'pcr_history' not in st.session_state:
     st.session_state.pcr_history = pd.DataFrame(columns=["Time", "Strike", "PCR", "Signal"])
+
+# === New Global Variables ===
+trade_lock = threading.Lock()
+
+# === Telegram Config ===
+TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
+TELEGRAM_CHAT_ID = "5704496584"
+
+# === Supabase Trade Table Functions ===
+def init_trade_table():
+    """Initialize the trades table in Supabase if it doesn't exist"""
+    if supabase is None:
+        return False
+    
+    try:
+        # Check if table exists
+        supabase.table("trades").select("count").limit(1).execute()
+        return True
+    except:
+        try:
+            # Create table (this would need to be done manually in Supabase)
+            # For now, we'll assume the table exists with the right schema
+            st.warning("Trades table needs to be created manually in Supabase")
+            return False
+        except Exception as e:
+            st.error(f"Error creating trades table: {e}")
+            return False
+
+def log_trade_entry(strike, option_type, entry_price, zone_type, spot_price):
+    """Log a new trade entry to Supabase"""
+    if supabase is None:
+        return None
+    
+    try:
+        trade_data = {
+            "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
+            "strike": strike,
+            "option_type": option_type,
+            "entry_price": entry_price,
+            "zone_type": zone_type,
+            "spot_price": spot_price,
+            "status": "active",
+            "target_hit": False,
+            "sl_hit": False,
+            "completed": False
+        }
+        
+        response = supabase.table("trades").insert(trade_data).execute()
+        if hasattr(response, 'data') and response.data:
+            return response.data[0].get('id')
+        return None
+    except Exception as e:
+        st.error(f"Error logging trade entry: {e}")
+        return None
+
+def update_trade_status(trade_id, field, value):
+    """Update trade status in Supabase"""
+    if supabase is None or trade_id is None:
+        return False
+    
+    try:
+        update_data = {field: value}
+        if field in ["target_hit", "sl_hit", "completed"]:
+            update_data["completion_time"] = datetime.now(timezone("Asia/Kolkata")).isoformat()
+        
+        response = supabase.table("trades").update(update_data).eq("id", trade_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error updating trade status: {e}")
+        return False
+
+def check_active_trades():
+    """Check if there are any active trades in Supabase"""
+    if supabase is None:
+        return {}
+    
+    try:
+        response = supabase.table("trades").select("*").eq("status", "active").execute()
+        if response.data:
+            return {trade['strike']: trade for trade in response.data}
+        return {}
+    except Exception as e:
+        st.error(f"Error checking active trades: {e}")
+        return {}
+
+def check_black_day():
+    """Check if today is a black day in Supabase"""
+    if supabase is None:
+        return False
+    
+    try:
+        today = datetime.now(timezone("Asia/Kolkata")).date().isoformat()
+        response = supabase.table("black_days").select("*").eq("date", today).execute()
+        return bool(response.data)
+    except Exception as e:
+        st.error(f"Error checking black day: {e}")
+        return False
+
+def mark_black_day():
+    """Mark today as a black day in Supabase"""
+    if supabase is None:
+        return False
+    
+    try:
+        black_day_data = {
+            "date": datetime.now(timezone("Asia/Kolkata")).date().isoformat(),
+            "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat()
+        }
+        
+        response = supabase.table("black_days").insert(black_day_data).execute()
+        return bool(response.data)
+    except Exception as e:
+        st.error(f"Error marking black day: {e}")
+        return False
 
 # === Dhan API Functions ===
 def get_dhan_headers():
@@ -325,10 +432,6 @@ def cleanup_old_data():
     ):
         return delete_all_history()
     return False
-
-# === Telegram Config ===
-TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
-TELEGRAM_CHAT_ID = "5704496584"
 
 def send_telegram_message(message):
     """Send message via Telegram bot"""
@@ -567,26 +670,36 @@ def plot_price_with_sr():
             line=dict(color='blue', width=2)
         ))
         
-        # Add support and resistance zones if available
-        support_zone = st.session_state.support_zone
-        resistance_zone = st.session_state.resistance_zone
+        # Add dynamic support zones if available
+        if hasattr(st.session_state, 'support_zones'):
+            for strike, zone in st.session_state.support_zones.items():
+                fig.add_hrect(
+                    y0=zone[0], y1=zone[1],
+                    fillcolor="green", opacity=0.1,
+                    line_width=1, line_dash="dash", 
+                    name=f"Support {strike}"
+                )
+                # Add strike level line
+                fig.add_hline(y=strike, line_dash="dash", 
+                             line_color="green", opacity=0.5,
+                             annotation_text=f"S {strike}")
         
-        if support_zone[0] is not None and support_zone[1] is not None:
-            fig.add_hrect(
-                y0=support_zone[0], y1=support_zone[1],
-                fillcolor="green", opacity=0.2,
-                line_width=0, name="Support Zone"
-            )
-        
-        if resistance_zone[0] is not None and resistance_zone[1] is not None:
-            fig.add_hrect(
-                y0=resistance_zone[0], y1=resistance_zone[1],
-                fillcolor="red", opacity=0.2,
-                line_width=0, name="Resistance Zone"
-            )
+        # Add dynamic resistance zones if available
+        if hasattr(st.session_state, 'resistance_zones'):
+            for strike, zone in st.session_state.resistance_zones.items():
+                fig.add_hrect(
+                    y0=zone[0], y1=zone[1],
+                    fillcolor="red", opacity=0.1,
+                    line_width=1, line_dash="dash",
+                    name=f"Resistance {strike}"
+                )
+                # Add strike level line
+                fig.add_hline(y=strike, line_dash="dash", 
+                             line_color="red", opacity=0.5,
+                             annotation_text=f"R {strike}")
         
         fig.update_layout(
-            title="Nifty Price Action with Support/Resistance Zones",
+            title="Nifty Price Action with Dynamic Support/Resistance Zones",
             xaxis_title="Time",
             yaxis_title="Price",
             template="plotly_white"
@@ -653,6 +766,178 @@ def display_call_log_book():
         total_pnl = sum(log['Current P&L'] * log['Quantity'] for log in st.session_state.call_log_book if log['Status'] == 'Active')
         st.metric("Total Active P&L", f"₹{total_pnl:,.2f}")
 
+# === Dynamic Support/Resistance Zone Calculation ===
+def calculate_pcr_based_zone_width(pcr, strike, underlying):
+    """Calculate zone width based on PCR strength"""
+    # Strong PCR values get narrower zones, weak PCR gets wider zones
+    if pcr > 2.0 or pcr < 0.4:  # Very strong signal
+        zone_width = 5
+    elif pcr > 1.5 or pcr < 0.7:  # Strong signal
+        zone_width = 10
+    else:  # Weak signal
+        zone_width = 15
+    
+    return zone_width
+
+def calculate_dynamic_zones(df, underlying, atm_strike):
+    """Calculate dynamic support/resistance zones based on PCR"""
+    support_zones = {}
+    resistance_zones = {}
+    
+    # Get strikes around ATM (±3 strikes)
+    relevant_strikes = df[df['strikePrice'].between(atm_strike - 300, atm_strike + 300)]
+    
+    for _, row in relevant_strikes.iterrows():
+        strike = row['strikePrice']
+        pcr = row.get('PCR', 1.0)
+        
+        zone_width = calculate_pcr_based_zone_width(pcr, strike, underlying)
+        
+        # Determine if this is support or resistance based on OI
+        if row['Level'] == 'Support':
+            support_zones[strike] = (strike - zone_width, strike + zone_width)
+        elif row['Level'] == 'Resistance':
+            resistance_zones[strike] = (strike - zone_width, strike + zone_width)
+    
+    return support_zones, resistance_zones
+
+# === Entry Logic ===
+def check_entry_signal(underlying, support_zones, resistance_zones, df, atm_strike):
+    """Check if we should enter a trade based on zone penetration"""
+    # Don't generate signals on black day or if there are active trades
+    if st.session_state.black_day or st.session_state.active_trades:
+        return None, None, None
+    
+    # Check support zones for long entries (PE)
+    for strike, zone in support_zones.items():
+        if zone[0] <= underlying <= zone[1]:
+            # Additional conditions from existing logic
+            row = df[df['strikePrice'] == strike].iloc[0]
+            if (row['PCR_Signal'] == "Bullish" and 
+                row['Market_Logic'] == "Bullish" and
+                row['Verdict'] in ["Bullish", "Strong Bullish"]):
+                
+                # Check if we already have an active trade for this strike
+                if strike not in st.session_state.active_trades:
+                    return strike, "PE", "support"
+    
+    # Check resistance zones for short entries (CE)
+    for strike, zone in resistance_zones.items():
+        if zone[0] <= underlying <= zone[1]:
+            # Additional conditions from existing logic
+            row = df[df['strikePrice'] == strike].iloc[0]
+            if (row['PCR_Signal'] == "Bearish" and 
+                row['Market_Logic'] == "Bearish" and
+                row['Verdict'] in ["Bearish", "Strong Bearish"]):
+                
+                # Check if we already have an active trade for this strike
+                if strike not in st.session_state.active_trades:
+                    return strike, "CE", "resistance"
+    
+    return None, None, None
+
+# === Target & Stop-Loss Logic ===
+def calculate_option_price(option_type, strike, spot_price, days_to_expiry=1, iv=0.15):
+    """Calculate theoretical option price (simplified)"""
+    # Simplified calculation - in practice, you'd use a proper options pricing model
+    if option_type == "CE":
+        intrinsic = max(0, spot_price - strike)
+    else:  # PE
+        intrinsic = max(0, strike - spot_price)
+    
+    # Add some time value (simplified)
+    time_value = 10 * (days_to_expiry / 365) * iv * 100
+    return intrinsic + time_value
+
+def check_exit_conditions(underlying, active_trades, support_zones, resistance_zones):
+    """Check if any active trades have hit target or stop-loss"""
+    exits = []
+    
+    for strike, trade in active_trades.items():
+        option_type = trade['option_type']
+        entry_price = trade['entry_price']
+        zone_type = trade['zone_type']
+        
+        # Calculate current option price
+        current_price = calculate_option_price(option_type, strike, underlying)
+        
+        # Check for target (opposite zone)
+        if zone_type == "support":  # Long trade, target is resistance zone
+            target_zone = next((zone for s, zone in resistance_zones.items() if s != strike), None)
+            if target_zone and target_zone[0] <= underlying <= target_zone[1]:
+                # Target hit
+                profit = current_price - entry_price
+                exits.append((strike, "target", profit))
+        
+        elif zone_type == "resistance":  # Short trade, target is support zone
+            target_zone = next((zone for s, zone in support_zones.items() if s != strike), None)
+            if target_zone and target_zone[0] <= underlying <= target_zone[1]:
+                # Target hit
+                profit = entry_price - current_price
+                exits.append((strike, "target", profit))
+        
+        # Check for stop-loss (15% of entry price for simplicity)
+        sl_price = entry_price * 0.85 if option_type == "CE" else entry_price * 1.15
+        if (option_type == "CE" and current_price <= sl_price) or \
+           (option_type == "PE" and current_price >= sl_price):
+            # Stop-loss hit
+            loss = entry_price - current_price if option_type == "CE" else current_price - entry_price
+            exits.append((strike, "sl", loss))
+            
+            # Mark black day if stop-loss hit
+            if not st.session_state.black_day:
+                st.session_state.black_day = True
+                mark_black_day()
+                send_telegram_message("🛑 STOP-LOSS HIT! Black day declared. No new trades for the rest of the day.")
+    
+    return exits
+
+# === Alert Functions ===
+def send_trade_alert(strike, option_type, entry_price, action, reason=""):
+    """Send trade alert via Telegram"""
+    message = f"""
+    🎯 {action.upper()} ALERT
+    Strike: {strike} {option_type}
+    Entry Price: {entry_price}
+    {reason}
+    Time: {datetime.now(timezone('Asia/Kolkata')).strftime('%H:%M:%S')}
+    """
+    send_telegram_message(message)
+
+def send_exit_alert(strike, option_type, exit_type, pnl):
+    """Send exit alert via Telegram"""
+    pnl_str = f"₹{pnl:,.2f} {'Profit' if pnl > 0 else 'Loss'}"
+    
+    if exit_type == "target":
+        message = f"""
+        ✅ TARGET HIT
+        Strike: {strike} {option_type}
+        P&L: {pnl_str}
+        Trade over, get ready for next trade.
+        """
+    else:  # stop-loss
+        message = f"""
+        🛑 STOP-LOSS HIT
+        Strike: {strike} {option_type}
+        P&L: {pnl_str}
+        Trade over, get ready for next trade.
+        """
+    
+    send_telegram_message(message)
+
+# === Daily Reset Logic ===
+def check_daily_reset():
+    """Check if we need to reset the black day flag for a new trading day"""
+    ist = timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Reset black day at market open (9:00 AM)
+    if now.hour == 9 and now.minute == 0:
+        st.session_state.black_day = False
+        
+        # Also clear active trades at market open
+        st.session_state.active_trades.clear()
+
 def analyze():
     """Main analysis function"""
     st.title("Nifty Options Analyzer with OI + Price Signals")
@@ -664,6 +949,9 @@ def analyze():
         st.info(f"⏰ Market is currently closed. Trading hours: Mon-Fri, 9:00 AM - 3:40 PM IST")
         st.info(f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         return
+    
+    # Check for daily reset
+    check_daily_reset()
     
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
@@ -952,25 +1240,137 @@ def analyze():
 
         atm_row = df_summary[df_summary["Zone"] == "ATM"].iloc[0] if not df_summary[df_summary["Zone"] == "ATM"].empty else None
         market_view = atm_row['Verdict'] if atm_row is not None else "Neutral"
-        support_zone, resistance_zone = get_support_resistance_zones(df, underlying)
 
-        # Store zones in session state
-        st.session_state.support_zone = support_zone
-        st.session_state.resistance_zone = resistance_zone
-
+        # === New Trading Logic ===
+        # Initialize trade table if needed
+        init_trade_table()
+        
+        # Check if we're in a black day
+        st.session_state.black_day = check_black_day()
+        if st.session_state.black_day:
+            st.warning("🛑 BLACK DAY: No new trades allowed (stop-loss was hit today)")
+        
+        # Check for active trades in database
+        st.session_state.active_trades = check_active_trades()
+        
+        # Calculate dynamic zones
+        support_zones, resistance_zones = calculate_dynamic_zones(df, underlying, atm_strike)
+        
+        # Store zones in session state for display
+        st.session_state.support_zones = support_zones
+        st.session_state.resistance_zones = resistance_zones
+        
+        # Check for entry signals
+        entry_strike, entry_type, zone_type = check_entry_signal(
+            underlying, support_zones, resistance_zones, df_summary, atm_strike
+        )
+        
+        # Process entry if found
+        if entry_strike and entry_type and zone_type:
+            # Calculate entry price (theoretical)
+            entry_price = calculate_option_price(entry_type, entry_strike, underlying)
+            
+            # Log trade to Supabase
+            trade_id = log_trade_entry(entry_strike, entry_type, entry_price, zone_type, underlying)
+            
+            if trade_id:
+                # Add to active trades
+                st.session_state.active_trades[entry_strike] = {
+                    'id': trade_id,
+                    'option_type': entry_type,
+                    'entry_price': entry_price,
+                    'zone_type': zone_type,
+                    'entry_time': datetime.now(timezone("Asia/Kolkata")).isoformat()
+                }
+                
+                # Send alert
+                reason = "Price entered {} zone with confirming signals".format(zone_type)
+                send_trade_alert(entry_strike, entry_type, entry_price, "entry", reason)
+                
+                # Add to trade log
+                st.session_state.trade_log.append({
+                    'Time': datetime.now().strftime('%H:%M:%S'),
+                    'Strike': entry_strike,
+                    'Type': entry_type,
+                    'Action': 'Entry',
+                    'Price': entry_price,
+                    'Signal': 'Zone Entry'
+                })
+        
+        # Check for exit conditions
+        exits = check_exit_conditions(underlying, st.session_state.active_trades, support_zones, resistance_zones)
+        
+        # Process exits
+        for strike, exit_type, pnl in exits:
+            if strike in st.session_state.active_trades:
+                trade = st.session_state.active_trades[strike]
+                
+                # Update trade in Supabase
+                if exit_type == "target":
+                    update_trade_status(trade['id'], "target_hit", True)
+                else:  # stop-loss
+                    update_trade_status(trade['id'], "sl_hit", True)
+                
+                update_trade_status(trade['id'], "status", "completed")
+                update_trade_status(trade['id'], "completed", True)
+                
+                # Send alert
+                send_exit_alert(strike, trade['option_type'], exit_type, pnl)
+                
+                # Add to trade log
+                action = "Target" if exit_type == "target" else "Stop-Loss"
+                st.session_state.trade_log.append({
+                    'Time': datetime.now().strftime('%H:%M:%S'),
+                    'Strike': strike,
+                    'Type': trade['option_type'],
+                    'Action': action,
+                    'Price': calculate_option_price(trade['option_type'], strike, underlying),
+                    'Signal': 'Exit',
+                    'P&L': pnl
+                })
+                
+                # Remove from active trades
+                del st.session_state.active_trades[strike]
+        
         # Update price history
         current_time_str = now.strftime("%H:%M:%S")
         new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
         st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
 
-        # Format support/resistance strings
-        support_str = f"{support_zone[0]} to {support_zone[1]}" if all(support_zone) and None not in support_zone else "N/A"
-        resistance_str = f"{resistance_zone[0]} to {resistance_zone[1]}" if all(resistance_zone) and None not in resistance_zone else "N/A"
-
         # === Main Display ===
         st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
-        st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
-        st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
+        
+        # Display active trades
+        if st.session_state.active_trades:
+            st.markdown("### 📊 Active Trades")
+            for strike, trade in st.session_state.active_trades.items():
+                current_price = calculate_option_price(trade['option_type'], strike, underlying)
+                pnl = current_price - trade['entry_price'] if trade['option_type'] == "CE" else trade['entry_price'] - current_price
+                pnl_color = "green" if pnl > 0 else "red"
+                
+                st.markdown(f"""
+                **Strike**: {strike} {trade['option_type']}  
+                **Entry**: ₹{trade['entry_price']:.2f}  
+                **Current**: ₹{current_price:.2f}  
+                **P&L**: <span style='color:{pnl_color}'>₹{pnl:.2f}</span>  
+                **Zone**: {trade['zone_type']}  
+                **Entry Time**: {trade['entry_time']}
+                """, unsafe_allow_html=True)
+        
+        # Display dynamic zones
+        st.markdown("### 🎯 Dynamic Support/Resistance Zones")
+        
+        if support_zones:
+            st.markdown("#### 🛡️ Support Zones")
+            for strike, zone in support_zones.items():
+                in_zone = "✅" if zone[0] <= underlying <= zone[1] else "❌"
+                st.write(f"{in_zone} {strike}: {zone[0]} - {zone[1]}")
+        
+        if resistance_zones:
+            st.markdown("#### 🚧 Resistance Zones")
+            for strike, zone in resistance_zones.items():
+                in_zone = "✅" if zone[0] <= underlying <= zone[1] else "❌"
+                st.write(f"{in_zone} {strike}: {zone[0]} - {zone[1]}")
         
         # Plot price action
         plot_price_with_sr()
