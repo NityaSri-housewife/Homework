@@ -18,6 +18,7 @@ import schedule
 import pytz
 import time as time_module
 import traceback
+import io
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -327,8 +328,10 @@ class SupabaseClient:
             logger.error(f"Error fetching historical data from Supabase: {e}")
             return None
     
-    def store_signal(self, signal):
+    def store_signal(self, signal, debug_mode=False):
         try:
+            if debug_mode:
+                signal["debug_mode"] = True
             response = self.supabase.table("signals").insert(signal).execute()
             logger.info(f"Stored signal: {signal['signal_type']} at {signal['timestamp']}")
             return response
@@ -336,15 +339,19 @@ class SupabaseClient:
             logger.error(f"Error storing signal: {e}")
             return None
     
-    def get_recent_signals(self, hours=24):
+    def get_recent_signals(self, hours=24, debug_only=False):
         try:
             from_time = (datetime.now() - timedelta(hours=hours)).isoformat()
             
-            response = self.supabase.table("signals") \
+            query = self.supabase.table("signals") \
                 .select("*") \
                 .gte("timestamp", from_time) \
-                .order("timestamp", desc=True) \
-                .execute()
+                .order("timestamp", desc=True)
+            
+            if debug_only:
+                query = query.eq("debug_mode", True)
+                
+            response = query.execute()
             
             return response.data
         except Exception as e:
@@ -387,6 +394,8 @@ class VOBTradingSystem:
         self.running = False
         self.last_run_time = None
         self.last_signals = []
+        self.debug_mode = False
+        self.pine_signals_df = None
         
     def initialize_clients(self):
         try:
@@ -431,6 +440,7 @@ class VOBTradingSystem:
         market_close = datetime.strptime('15:41', '%H:%M').time()
         
         return market_open <= current_time <= market_close
+    
     def fetch_nifty_data(self):
         """Fetch Nifty 50 intraday data (Security ID for Nifty 50 is 13 in IDX_I segment)"""
         if not self.initialized:
@@ -520,21 +530,22 @@ class VOBTradingSystem:
                         "timeframe": "3min"  # Add timeframe information
                     }
                     
-                    self.supabase_client.store_signal(signal_record)
+                    self.supabase_client.store_signal(signal_record, self.debug_mode)
                     
-                    # Send Telegram notification
-                    message = f"VOB {signal['type'].upper()} Signal detected on NIFTY (3min)!\n"
-                    message += f"Time: {signal['timestamp']}\n"
-                    message += f"Price: {signal['price']:.2f}\n"
-                    
-                    if signal['type'] == 'bullish':
-                        message += f"Base: {signal['base_price']:.2f}, Low: {signal['low_price']:.2f}"
-                    else:
-                        message += f"Base: {signal['base_price']:.2f}, High: {signal['high_price']:.2f}"
-                    
-                    message += f"\nATR: {signal['atr_value']:.2f}"
-                    
-                    self.telegram_bot.send_message(message)
+                    # Send Telegram notification (only if not in debug mode)
+                    if not self.debug_mode:
+                        message = f"VOB {signal['type'].upper()} Signal detected on NIFTY (3min)!\n"
+                        message += f"Time: {signal['timestamp']}\n"
+                        message += f"Price: {signal['price']:.2f}\n"
+                        
+                        if signal['type'] == 'bullish':
+                            message += f"Base: {signal['base_price']:.2f}, Low: {signal['low_price']:.2f}"
+                        else:
+                            message += f"Base: {signal['base_price']:.2f}, High: {signal['high_price']:.2f}"
+                        
+                        message += f"\nATR: {signal['atr_value']:.2f}"
+                        
+                        self.telegram_bot.send_message(message)
                     new_signals.append(signal)
             
             return new_signals
@@ -607,11 +618,46 @@ class VOBTradingSystem:
             success = self.supabase_client.clear_history()
             if success:
                 logger.info("History cleared successfully")
-                self.telegram_bot.send_message("All historical data and signals have been cleared.")
+                if not self.debug_mode:
+                    self.telegram_bot.send_message("All historical data and signals have been cleared.")
             return success
         except Exception as e:
             logger.error(f"Error clearing history: {e}")
             return False
+    
+    def compare_signals(self):
+        """Compare Python signals with Pine Script signals"""
+        if not self.initialized or self.pine_signals_df is None:
+            return None
+        
+        # Get recent Python signals (debug mode only)
+        python_signals = self.supabase_client.get_recent_signals(hours=24, debug_only=True)
+        
+        if not python_signals:
+            return None
+        
+        # Convert to DataFrame
+        python_df = pd.DataFrame(python_signals)
+        python_df['timestamp'] = pd.to_datetime(python_df['timestamp'])
+        
+        # Prepare Pine signals
+        pine_df = self.pine_signals_df.copy()
+        pine_df['timestamp'] = pd.to_datetime(pine_df['timestamp'])
+        
+        # Merge signals on timestamp
+        merged_df = pd.merge(
+            python_df, 
+            pine_df, 
+            on='timestamp', 
+            how='inner',
+            suffixes=('_python', '_pine')
+        )
+        
+        # Compare signals
+        merged_df['match'] = merged_df['signal_type_python'] == merged_df['signal_type_pine']
+        
+        return merged_df
+
 # Streamlit App
 def main():
     st.title("Nifty 50 VOB Trading System (3-Minute Intraday)")
@@ -631,6 +677,82 @@ def main():
                 st.info("Make sure you have set all required secrets in .streamlit/secrets.toml")
                 return
     
+    # Debug mode toggle
+    st.sidebar.header("Debug Mode")
+    debug_mode = st.sidebar.checkbox("Enable Debug Mode", value=False)
+    trading_system.debug_mode = debug_mode
+    
+    if debug_mode:
+        st.sidebar.info("Debug mode is enabled. Signals will be saved with debug flag and Telegram notifications are disabled.")
+        
+        # Upload Pine Script signals
+        st.sidebar.header("Upload Pine Script Signals")
+        pine_file = st.sidebar.file_uploader("Upload CSV with Pine Script signals", type=['csv'])
+        
+        if pine_file is not None:
+            try:
+                pine_df = pd.read_csv(pine_file)
+                required_cols = ['timestamp', 'signal', 'base', 'ATR']
+                
+                if all(col in pine_df.columns for col in required_cols):
+                    trading_system.pine_signals_df = pine_df
+                    st.sidebar.success(f"Uploaded {len(pine_df)} Pine Script signals")
+                else:
+                    st.sidebar.error(f"CSV must contain columns: {', '.join(required_cols)}")
+            except Exception as e:
+                st.sidebar.error(f"Error reading CSV file: {e}")
+        
+        # Compare signals
+        if trading_system.pine_signals_df is not None:
+            comparison_df = trading_system.compare_signals()
+            
+            if comparison_df is not None and not comparison_df.empty:
+                st.header("Signal Comparison: Python vs Pine Script")
+                
+                # Display comparison results
+                st.dataframe(
+                    comparison_df[
+                        ['timestamp', 'signal_type_python', 'signal_type_pine', 'match']
+                    ].rename(columns={
+                        'signal_type_python': 'Python Signal',
+                        'signal_type_pine': 'Pine Signal',
+                        'match': 'Match'
+                    }),
+                    use_container_width=True
+                )
+                
+                # Calculate accuracy
+                accuracy = comparison_df['match'].mean() * 100
+                st.metric("Signal Matching Accuracy", f"{accuracy:.2f}%")
+                
+                # Show detailed comparison with highlighting
+                st.subheader("Detailed Comparison")
+                
+                # Format the comparison table with highlighting for mismatches
+                def highlight_mismatches(row):
+                    if row['signal_type_python'] != row['signal_type_pine']:
+                        return ['background-color: #ffcccc'] * len(row)
+                    else:
+                        return [''] * len(row)
+                
+                detailed_df = comparison_df[
+                    ['timestamp', 'signal_type_python', 'signal_type_pine', 
+                     'price_python', 'base_pine', 'ATR_pine']
+                ].rename(columns={
+                    'signal_type_python': 'Python Signal',
+                    'signal_type_pine': 'Pine Signal',
+                    'price_python': 'Price',
+                    'base_pine': 'Base',
+                    'ATR_pine': 'ATR'
+                })
+                
+                st.dataframe(
+                    detailed_df.style.apply(highlight_mismatches, axis=1),
+                    use_container_width=True
+                )
+            else:
+                st.info("No matching signals found for comparison. Make sure you have generated signals in debug mode.")
+    
     # Display market status
     st.header("Market Status")
     market_status = "🟢 OPEN" if trading_system.is_market_hours() else "🔴 CLOSED"
@@ -646,7 +768,10 @@ def main():
     # Display recent signals
     st.header("Recent Nifty Signals (3-Minute Intraday)")
     if trading_system.initialized:
-        recent_signals = trading_system.supabase_client.get_recent_signals(hours=24)
+        recent_signals = trading_system.supabase_client.get_recent_signals(
+            hours=24, 
+            debug_only=trading_system.debug_mode
+        )
         if recent_signals:
             signals_df = pd.DataFrame(recent_signals)
             
@@ -674,7 +799,7 @@ def main():
     **Interval:** 2 minutes
     **Market Hours:** 9:01-15:41 IST (Mon-Fri)
     **Auto-run:** Enabled
-    """)
+    **Debug Mode:** """ + ("✅ Enabled" if debug_mode else "❌ Disabled"))
     
     # Clear history button
     st.sidebar.header("Data Management")
