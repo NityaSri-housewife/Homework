@@ -692,7 +692,7 @@ def analyze():
         st.session_state.previous_price = underlying
 
         # Set dynamic PCR thresholds based on VIX
-        if vix_value > 12:
+        if vix_value > 12.50:
             st.session_state.pcr_threshold_bull = 2.0
             st.session_state.pcr_threshold_bear = 0.4
             volatility_status = "High Volatility"
