@@ -439,7 +439,7 @@ class VOBTradingSystem:
 
         current_time = now.time()
         market_open = datetime.strptime('09:01', '%H:%M').time()
-        market_close = datetime.strptime('15:41', '%H:%M').time()
+        market_close = datetime.strptime('18:41', '%H:%M').time()
         
         return market_open <= current_time <= market_close
     
