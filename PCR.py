@@ -9,12 +9,23 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
-import supabase  # Add supabase client
 
 # === Supabase Configuration ===
-SUPABASE_URL = "your_supabase_url_here"
-SUPABASE_KEY = "your_supabase_key_here"
-supabase_client = supabase.create_client(SUPABASE_URL, SUPABASE_KEY)
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "") if hasattr(st, 'secrets') else ""
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "") if hasattr(st, 'secrets') else ""
+
+# Initialize Supabase client only if credentials are provided
+supabase_client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        import supabase
+        supabase_client = supabase.create_client(SUPABASE_URL, SUPABASE_KEY)
+        st.success("✅ Connected to Supabase")
+    except Exception as e:
+        st.warning(f"⚠️ Supabase connection failed: {e}")
+        supabase_client = None
+else:
+    st.info("ℹ️ Supabase not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.toml to enable data storage.")
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
@@ -57,6 +68,8 @@ if 'price_history' not in st.session_state:
     st.session_state.price_history = pd.DataFrame(columns=["timestamp", "price"])
 if 'option_chain_history' not in st.session_state:
     st.session_state.option_chain_history = pd.DataFrame(columns=["timestamp", "strike", "call_oi", "put_oi", "call_pcr", "put_pcr"])
+if 'use_market_logic' not in st.session_state:
+    st.session_state.use_market_logic = False
 
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
@@ -423,6 +436,9 @@ def color_pcr(val):
 # === Market Logic Functions ===
 def store_price_data(price):
     """Store price data in Supabase"""
+    if not supabase_client:
+        return
+        
     try:
         data = {
             "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
@@ -434,6 +450,9 @@ def store_price_data(price):
 
 def store_option_chain_data(option_chain_data):
     """Store option chain data in Supabase"""
+    if not supabase_client:
+        return
+        
     try:
         timestamp = datetime.now(timezone("Asia/Kolkata")).isoformat()
         
@@ -460,6 +479,9 @@ def store_option_chain_data(option_chain_data):
 
 def get_historical_data(minutes=10):
     """Get historical price and option chain data from Supabase"""
+    if not supabase_client:
+        return pd.DataFrame(), pd.DataFrame()
+        
     try:
         # Get price history
         price_response = supabase_client.table("price_history") \
@@ -715,8 +737,7 @@ def analyze():
 
             # Add bid/ask pressure calculation
             bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
-                row['bidQty_CE'], row['askQty_CE'], 
-                row['bidQty_PE'], row['askQty_PE']
+                row['bidQty_CE'], row['askQty_CE'],                                 row['bidQty_PE'], row['askQty_PE']
             )
             
             score = 0
@@ -790,9 +811,12 @@ def analyze():
         # Store option chain data
         store_option_chain_data(df_summary)
 
-        # Apply market logic
-        price_history, option_chain_history = get_historical_data()
-        market_bias, market_reason = apply_market_logic(price_history, option_chain_history)
+        # Apply market logic if enabled
+        market_bias, market_reason = "Neutral", "Market logic not enabled"
+        if st.session_state.use_market_logic:
+            price_history, option_chain_history = get_historical_data()
+            market_bias, market_reason = apply_market_logic(price_history, option_chain_history)
+        
         st.session_state.market_bias = market_bias
 
         styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
@@ -845,7 +869,7 @@ def analyze():
                         and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
                         and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
                         and pcr_signal == "Bullish"
-                        and st.session_state.market_bias in ["Bullish", "Neutral"]):  # Added market bias check
+                        and (not st.session_state.use_market_logic or st.session_state.market_bias in ["Bullish", "Neutral"])):  # Added market bias check
                         option_type = 'CE'
                     # Resistance + Bearish conditions with PCR confirmation
                     elif (row['Level'] == "Resistance" and total_score <= -4 
@@ -853,7 +877,7 @@ def analyze():
                           and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                           and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
                           and pcr_signal == "Bearish"
-                          and st.session_state.market_bias in ["Bearish", "Neutral"]):  # Added market bias check
+                          and (not st.session_state.use_market_logic or st.session_state.market_bias in ["Bearish", "Neutral"])):  # Added market bias check
                         option_type = 'PE'
                     else:
                         continue
@@ -863,13 +887,13 @@ def analyze():
                         and "Bullish" in market_view
                         and (atm_chgoi_bias == "Bullish" or atm_chgoi_bias is None)
                         and (atm_askqty_bias == "Bullish" or atm_askqty_bias is None)
-                        and st.session_state.market_bias in ["Bullish", "Neutral"]):  # Added market bias check
+                        and (not st.session_state.use_market_logic or st.session_state.market_bias in ["Bullish", "Neutral"])):  # Added market bias check
                         option_type = 'CE'
                     elif (row['Level'] == "Resistance" and total_score <= -4 
                           and "Bearish" in market_view
                           and (atm_chgoi_bias == "Bearish" or atm_chgoi_bias is None)
                           and (atm_askqty_bias == "Bearish" or atm_askqty_bias is None)
-                          and st.session_state.market_bias in ["Bearish", "Neutral"]):  # Added market bias check
+                          and (not st.session_state.use_market_logic or st.session_state.market_bias in ["Bearish", "Neutral"])):  # Added market bias check
                         option_type = 'PE'
                     else:
                         continue
@@ -916,7 +940,10 @@ def analyze():
         # === Main Display ===
         st.markdown(f"### 📍 Spot Price: {underlying}")
         st.success(f"🧠 Market View: **{market_view}** Bias Score: {total_score}")
-        st.info(f"📈 Market Bias: **{st.session_state.market_bias}** - {market_reason}")
+        
+        if st.session_state.use_market_logic:
+            st.info(f"📈 Market Bias: **{st.session_state.market_bias}** - {market_reason}")
+        
         st.markdown(f"### 🛡️ Support Zone: `{support_str}`")
         st.markdown(f"### 🚧 Resistance Zone: `{resistance_str}`")
         
@@ -931,12 +958,17 @@ def analyze():
             - >{st.session_state.pcr_threshold_bull} = Strong Put Activity (Bullish)
             - <{st.session_state.pcr_threshold_bear} = Strong Call Activity (Bearish)
             - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
+            """)
+            
+            if st.session_state.use_market_logic:
+                st.info("""
             ℹ️ Market Logic:
             - Put PCR > Call PCR + Price Falling → Bearish
             - Put PCR > Call PCR + Price Rising → Bullish
             - Call PCR > Put PCR + Price Rising → Bullish
             - Call PCR > Put PCR + Price Falling → Bearish
             """)
+            
             st.dataframe(styled_df)
         
         if st.session_state.trade_log:
@@ -968,6 +1000,16 @@ def analyze():
             st.session_state.use_pcr_filter = st.checkbox(
                 "Enable PCR Filtering", 
                 value=st.session_state.use_pcr_filter
+            )
+            
+        # Market Logic Configuration
+        st.markdown("### 🔄 Market Logic Configuration")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.use_market_logic = st.checkbox(
+                "Enable Market Logic", 
+                value=st.session_state.use_market_logic,
+                help="Uses historical data to determine market bias based on PCR and price trends"
             )
         
         # PCR History
