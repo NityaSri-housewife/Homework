@@ -1,67 +1,41 @@
-beautifulsoup4>=4.12.0
-feedparser>=6.0.10
-google-auth>=2.22.0
-google-auth-httplib2>=0.1.0
-google-auth-oauthlib>=1.0.0
-lxml>=4.9.0
-numpy>=1.24.0
-openpyxl>=3.1.0
-pandas>=2.0.0
-plotly>=5.15.0
-pytz>=2023.3
-requests>=2.31.0
-scipy>=1.10.0
-streamlit>=1.28.0
-streamlit-autorefresh>=0.0.1
-ta
-textblob>=0.17.1
-vaderSentiment>=3.3.2
-dhanhq
-plotly
-pandas
-numpy
-requests
-streamlit
-supabase
-streamlit
-supabase
-python-dotenv
-requests
-websockets
-python-telegram-bot
-pandas
-numpy
-ta-lib
-matplotlib
-schedule
-gradio
-requests
-pandas
-numpy
-scipy
-pytz
-plotly
-openpyxl
-
-# Core packages
+# Core
 streamlit>=1.28.0
 requests>=2.31.0
 pandas>=2.0.0
 numpy>=1.24.0
 scipy>=1.10.0
-
-
-# Excel & Timezone
-openpyxl>=3.1.0
 pytz>=2023.3
+openpyxl>=3.1.0
 
 # Plotting & Indicators
 plotly>=5.15.0
-ta>=0.10.2   # technical analysis library for RSI, EMA, etc.
+ta>=0.10.2
+matplotlib>=3.7.0
 
-# Google Sheets (if you export)
+# NLP & Sentiment
+textblob>=0.17.1
+vaderSentiment>=3.3.2
+
+# Google Sheets
 gspread>=5.10.0
 google-auth>=2.22.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0
 
-# Dhan API SDK (must be latest from GitHub)
+# Telegram
+python-telegram-bot>=20.0
+
+# Scheduling & Async
+schedule>=1.2.0
+websockets>=11.0.0
+
+# Streamlit extras
+streamlit-autorefresh>=0.0.1
+gradio>=3.38.0
+
+# Supabase
+supabase-py>=2.0.0
+python-dotenv>=1.0.0
+
+# Dhan API (latest from GitHub)
 git+https://github.com/dhan-oss/DhanHQ-py.git@main
