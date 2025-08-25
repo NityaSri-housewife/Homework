@@ -15,17 +15,24 @@ import time
 
 # === Market Hours Check Function ===
 def is_market_hours():
-    
+    """Check if current time is within market hours (Mon-Fri, 9:00 AM to 3:40 PM IST)"""
+    try:
+        # Get current time in IST
+        ist = timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        
+        # Check if it's a weekday (Monday=0, Friday=4)
         if now.weekday() > 4:  # Saturday or Sunday
             return False
             
         # Check if time is between 9:00 AM and 3:40 PM
         market_start = dt_time(9, 0)
-        market_end = dt_time(16, 40)
+        market_end = dt_time(15, 40)
         current_time = now.time()
         
         return market_start <= current_time <= market_end
-    except Exception as e: st.error(f"Error checking market hours: {e}")
+    except Exception as e:
+        st.error(f"Error checking market hours: {e}")
         return False
 
 # === Streamlit Config ===
