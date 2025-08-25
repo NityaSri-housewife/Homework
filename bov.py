@@ -44,8 +44,8 @@ class VOBIndicator:
         # Calculate EMA with min_periods to handle initial NaN values
         return series.ewm(span=period, adjust=False, min_periods=1).mean()
     
-    def calculate_atr(self, period=200, multiplier=3):
-        """Calculate ATR with proper NaN handling"""
+    def calculate_atr(self, period=21, multiplier=2.5):
+        """Calculate ATR with proper NaN handling - Updated for 3-minute charts"""
         high = self.data['high']
         low = self.data['low']
         close = self.data['close']
@@ -116,7 +116,7 @@ class VOBIndicator:
         # Ensure window doesn't exceed data length
         actual_window = min(window, len(self.data))
         
-        atr = self.calculate_atr(200, 3)
+        atr = self.calculate_atr(21, 2.5)  # Updated ATR settings for 3-minute charts
         
         # Initialize signals list
         self.signals = []
@@ -267,6 +267,26 @@ class SupabaseClient:
     
     def store_historical_data(self, security_id, exchange_segment, data):
         try:
+            # Get the latest timestamp from Supabase for this security
+            response = self.supabase.table("historical_data") \
+                .select("timestamp") \
+                .eq("security_id", security_id) \
+                .eq("exchange_segment", exchange_segment) \
+                .order("timestamp", desc=True) \
+                .limit(1) \
+                .execute()
+            
+            # Filter data to include only new candles
+            if response.data:
+                last_timestamp = pd.to_datetime(response.data[0]['timestamp'])
+                data = data[data.index > last_timestamp]
+                logger.info(f"Filtered data to {len(data)} new candles after {last_timestamp}")
+            
+            # Skip if no new data
+            if len(data) == 0:
+                logger.info("No new data to store")
+                return True
+                
             # Prepare data for insertion
             records = []
             for timestamp, row in data.iterrows():
@@ -284,7 +304,7 @@ class SupabaseClient:
                     "close": float(row['close']),
                     "volume": int(row['volume']),
                     "created_at": datetime.now().isoformat(),
-                    "timeframe": "3min"  # Add timeframe information
+                    "timeframe": "3min"
                 }
                 records.append(record)
             
@@ -292,8 +312,8 @@ class SupabaseClient:
             batch_size = 100
             for i in range(0, len(records), batch_size):
                 batch = records[i:i+batch_size]
-                response = self.supabase.table("historical_data").upsert(batch).execute()
-                logger.info(f"Stored batch of {len(batch)} historical data records")
+                response = self.supabase.table("historical_data").insert(batch).execute()
+                logger.info(f"Stored batch of {len(batch)} new historical data records")
             
             return True
         except Exception as e:
@@ -336,10 +356,23 @@ class SupabaseClient:
     
     def store_signal(self, signal, debug_mode=False):
         try:
+            # Check if signal already exists to avoid duplicates
+            query = self.supabase.table("signals") \
+                .select("id") \
+                .eq("timestamp", signal["timestamp"]) \
+                .eq("signal_type", signal["signal_type"]) \
+                .limit(1) \
+                .execute()
+            
+            if query.data:
+                logger.info(f"Signal already exists, skipping duplicate: {signal['signal_type']} at {signal['timestamp']}")
+                return None
+                
             if debug_mode:
                 signal["debug_mode"] = True
+                
             response = self.supabase.table("signals").insert(signal).execute()
-            logger.info(f"Stored signal: {signal['signal_type']} at {signal['timestamp']}")
+            logger.info(f"Stored new signal: {signal['signal_type']} at {signal['timestamp']}")
             return response
         except Exception as e:
             logger.error(f"Error storing signal: {e}")
@@ -524,7 +557,7 @@ class VOBTradingSystem:
                 return []
             
             # Ensure we have enough data for VOB calculations
-            min_required_bars = 200 + 13 + 5  # ATR period + EMA period + buffer
+            min_required_bars = 21 + 13 + 5  # ATR period + EMA period + buffer
             if len(intraday_data) < min_required_bars:
                 logger.warning(f"Not enough intraday data for VOB analysis. Have {len(intraday_data)}, need at least {min_required_bars}")
                 return []
@@ -534,31 +567,32 @@ class VOBTradingSystem:
             signals = vob.process_vob_signals()
             
             # Check for new signals
-            recent_signals = self.supabase_client.get_recent_signals(hours=24)
-            recent_timestamps = [s['timestamp'] for s in recent_signals]
-            
             new_signals = []
             for signal in signals:
                 signal_timestamp_str = signal['timestamp'].isoformat()
-                if signal_timestamp_str not in recent_timestamps:
-                    # Store signal
-                    signal_record = {
-                        "security_id": "13",
-                        "exchange_segment": "IDX_I",
-                        "timestamp": signal_timestamp_str,
-                        "signal_type": signal['type'],
-                        "price": signal['price'],
-                        "base_price": signal['base_price'],
-                        "low_price": signal.get('low_price', 0),
-                        "high_price": signal.get('high_price', 0),
-                        "atr_value": signal['atr_value'],
-                        "ema_fast": signal['ema_fast'],
-                        "ema_slow": signal['ema_slow'],
-                        "details": json.dumps(signal),
-                        "timeframe": "3min"  # Add timeframe information
-                    }
-                    
-                    self.supabase_client.store_signal(signal_record, self.debug_mode)
+                
+                # Store signal
+                signal_record = {
+                    "security_id": "13",
+                    "exchange_segment": "IDX_I",
+                    "timestamp": signal_timestamp_str,
+                    "signal_type": signal['type'],
+                    "price": signal['price'],
+                    "base_price": signal['base_price'],
+                    "low_price": signal.get('low_price', 0),
+                    "high_price": signal.get('high_price', 0),
+                    "atr_value": signal['atr_value'],
+                    "ema_fast": signal['ema_fast'],
+                    "ema_slow": signal['ema_slow'],
+                    "details": json.dumps(signal),
+                    "timeframe": "3min"
+                }
+                
+                # Store signal (duplicate check is handled in store_signal method)
+                response = self.supabase_client.store_signal(signal_record, self.debug_mode)
+                
+                if response:
+                    new_signals.append(signal)
                     
                     # Send Telegram notification (only if not in debug mode)
                     if not self.debug_mode:
@@ -574,7 +608,6 @@ class VOBTradingSystem:
                         message += f"\nATR: {signal['atr_value']:.2f}"
                         
                         self.telegram_bot.send_message(message)
-                    new_signals.append(signal)
             
             return new_signals
             
@@ -655,7 +688,7 @@ class VOBTradingSystem:
     
     def compare_signals(self):
         """Compare Python signals with Pine Script signals"""
-        if not self.initialized or self.pine_signals_df is None:
+        if not self.initialized or self.pine_signals_df is not None:
             return None
         
         # Get recent Python signals (debug mode only)
