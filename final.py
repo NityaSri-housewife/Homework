@@ -818,7 +818,7 @@ def check_entry_signal(underlying, support_zones, resistance_zones, df, atm_stri
     for strike, zone in support_zones.items():
         if zone[0] <= underlying <= zone[1]:
             # Additional conditions from existing logic
-            row = df[df['strikePrice'] == strike].iloc[0]
+            row = df[df['Strike'] == strike].iloc[0]
             if (row['PCR_Signal'] == "Bullish" and row['Market_Logic'] == "Bullish" and 
                 row['Verdict'] in ["Bullish", "Strong Bullish"]):
                 # Check if we already have an active trade for this strike
@@ -829,7 +829,7 @@ def check_entry_signal(underlying, support_zones, resistance_zones, df, atm_stri
     for strike, zone in resistance_zones.items():
         if zone[0] <= underlying <= zone[1]:
             # Additional conditions from existing logic
-            row = df[df['strikePrice'] == strike].iloc[0]
+            row = df[df['Strike'] == strike].iloc[0]
             if (row['PCR_Signal'] == "Bearish" and row['Market_Logic'] == "Bearish" and 
                 row['Verdict'] in ["Bearish", "Strong Bearish"]):
                 # Check if we already have an active trade for this strike
@@ -1178,8 +1178,9 @@ def analyze():
 
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
-            if abs(row['strikePrice'] - underlying) > 100:  # Focus on strikes near current price
-                continue
+            # REMOVE the filtering that was limiting strikes
+            # if abs(row['strikePrice'] - underlying) > 100:  # Focus on strikes near current price
+            #     continue
 
             score = 0
             row_data = {
@@ -1454,7 +1455,20 @@ def analyze():
                 else:
                     return 'background-color: #F5F5F5; color: black'
 
-            styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(
+            # Filter to show only ATM ±2 strike prices
+            atm_strike = min(df_summary['Strike'], key=lambda x: abs(x - underlying))
+            all_strikes = sorted(df_summary['Strike'].unique())
+            atm_index = all_strikes.index(atm_strike)
+
+            # Get ATM ±2 strikes
+            start_index = max(0, atm_index - 2)
+            end_index = min(len(all_strikes), atm_index + 3)
+            selected_strikes = all_strikes[start_index:end_index]
+
+            # Filter the summary
+            df_summary_filtered = df_summary[df_summary['Strike'].isin(selected_strikes)]
+
+            styled_df = df_summary_filtered.style.applymap(color_pcr, subset=['PCR']).applymap(
                 color_signal, subset=['Signal_CE', 'Signal_PE']
             ).applymap(color_market_logic, subset=['Market_Logic'])
 
