@@ -434,7 +434,7 @@ class VOBTradingSystem:
             return False
     
     def is_market_hours(self):
-        """Check if current time is within market hours (All days, 9:01 to 15:41)"""
+        """Check if current time is within market hours (All days, 9:01 to 16:41)"""
         now = datetime.now(INDIAN_TZ)
 
         current_time = now.time()
@@ -663,7 +663,7 @@ class VOBTradingSystem:
 # Streamlit App
 def main():
     st.title("Nifty 50 VOB Trading System (3-Minute Intraday)")
-    st.info("System automatically runs every 2 minutes during market hours (9:01 to 15:41 IST, Mon-Fri)")
+    st.info("System automatically runs every 2 minutes during market hours (9:01 to 16:41 IST, Mon-Fri)")
     st.info("Using 3-minute intraday data for accurate VOB signal detection")
     
     # Initialize trading system
@@ -799,7 +799,7 @@ def main():
     **Focus:** Nifty 50
     **Data:** 3-minute intraday
     **Interval:** 2 minutes
-    **Market Hours:** 9:01-15:41 IST (Mon-Fri)
+    **Market Hours:** 9:01-16:41 IST (Mon-Fri)
     **Auto-run:** Enabled
     **Debug Mode:** """ + ("✅ Enabled" if debug_mode else "❌ Disabled"))
     
