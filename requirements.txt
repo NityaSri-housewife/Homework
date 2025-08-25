@@ -37,5 +37,3 @@ vaderSentiment>=3.3.2
 streamlit-autorefresh>=0.0.1
 python-dotenv
 schedule
-gradio
-git+https://github.com/dhan-oss/DhanHQ-py.git@main
