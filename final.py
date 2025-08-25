@@ -25,8 +25,7 @@ def is_market_hours():
         current_time = now.time()
         
         return market_start <= current_time <= market_end
-    except Exception as e:
-        st.error(f"Error checking market hours: {e}")
+    except Exception as e: st.error(f"Error checking market hours: {e}")
         return False
 
 # === Streamlit Config ===
