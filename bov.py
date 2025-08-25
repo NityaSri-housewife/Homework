@@ -4,21 +4,15 @@ import pandas as pd
 import numpy as np
 import requests
 import json
-import asyncio
-import websockets
 from datetime import datetime, timedelta
 import time
-from supabase import create_client, Client
+from supabase import create_client
 import telegram
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
 import threading
 import logging
 import schedule
 import pytz
-import time as time_module
 import traceback
-import io
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -190,6 +184,7 @@ class VOBIndicator:
                     self.signals.append(signal)
         
         return self.signals
+
 class DhanAPI:
     def __init__(self, access_token, client_id):
         self.access_token = access_token
@@ -250,6 +245,7 @@ class DhanAPI:
             logger.error(f"Error fetching intraday data: {e}")
             logger.error(traceback.format_exc())
             return None
+
 class SupabaseClient:
     def __init__(self, supabase_url, supabase_key):
         try:
@@ -371,6 +367,7 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Error clearing history: {e}")
             return False
+
 class TelegramBot:
     def __init__(self, bot_token, chat_id):
         self.bot_token = bot_token
@@ -383,6 +380,7 @@ class TelegramBot:
             logger.info(f"Sent Telegram message: {message}")
         except Exception as e:
             logger.error(f"Error sending Telegram message: {e}")
+
 class VOBTradingSystem:
     def __init__(self):
         # Initialize from Streamlit secrets
@@ -596,7 +594,7 @@ class VOBTradingSystem:
             
             while self.running:
                 schedule.run_pending()
-                time_module.sleep(1)
+                time.sleep(1)
         
         self.scheduler_thread = threading.Thread(target=scheduler_loop)
         self.scheduler_thread.daemon = True
