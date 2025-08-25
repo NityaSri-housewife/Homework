@@ -713,6 +713,11 @@ class VOBTradingSystem:
             signals_df = pd.DataFrame(signals)
             signals_df['timestamp'] = pd.to_datetime(signals_df['timestamp'])
             
+            # Calculate Y-axis range (spot price ±200 points)
+            current_price = historical_data['close'].iloc[-1]
+            y_min = current_price - 200
+            y_max = current_price + 200
+            
             # Create the chart
             fig = make_subplots(
                 rows=2, cols=1,
@@ -788,18 +793,22 @@ class VOBTradingSystem:
                     row=1, col=1
                 )
             
-            # Update layout
+            # Update layout with proper axis labels
             fig.update_layout(
                 title=f'Nifty 50 Price Action with VOB Signals (Last {days} Day{"s" if days > 1 else ""})',
-                yaxis_title='Price',
+                xaxis_title='IST Time',
+                yaxis_title='Nifty Price',
                 xaxis_rangeslider_visible=False,
                 height=800,
                 showlegend=True
             )
             
-            # Update y-axis labels
-            fig.update_yaxes(title_text="Price", row=1, col=1)
+            # Update y-axis labels and range
+            fig.update_yaxes(title_text="Nifty Price", range=[y_min, y_max], row=1, col=1)
             fig.update_yaxes(title_text="Volume", row=2, col=1)
+            
+            # Update x-axis label
+            fig.update_xaxes(title_text="IST Time", row=2, col=1)
             
             return fig
             
