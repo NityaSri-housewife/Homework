@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 # Indian timezone
 INDIAN_TZ = pytz.timezone('Asia/Kolkata')
 
+# Telegram API Configuration - Stored directly in script
+TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
+TELEGRAM_CHAT_ID = "5704496584"
+
 class VOBIndicator:
     def __init__(self, data, length1=5, colBull='#26ba9f', colBear='#ba2646'):
         self.data = data.copy()
@@ -383,7 +387,7 @@ class TelegramBot:
 
 class VOBTradingSystem:
     def __init__(self):
-        # Initialize from Streamlit secrets
+        # Initialize from Streamlit secrets for Dhan and Supabase, direct for Telegram
         self.dhan_client = None
         self.supabase_client = None
         self.telegram_bot = None
@@ -397,22 +401,22 @@ class VOBTradingSystem:
         
     def initialize_clients(self):
         try:
-            # Initialize Dhan API
+            # Initialize Dhan API from secrets
             self.dhan_client = DhanAPI(
                 access_token=st.secrets["dhan"]["access_token"],
                 client_id=st.secrets["dhan"]["client_id"]
             )
             
-            # Initialize Supabase
+            # Initialize Supabase from secrets
             self.supabase_client = SupabaseClient(
                 supabase_url=st.secrets["supabase"]["url"],
                 supabase_key=st.secrets["supabase"]["key"]
             )
             
-            # Initialize Telegram Bot
+            # Initialize Telegram Bot with direct credentials from script
             self.telegram_bot = TelegramBot(
-                bot_token=st.secrets["telegram"]["TELEGRAM_BOT_TOKEN"],
-                chat_id=st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
+                bot_token=TELEGRAM_BOT_TOKEN,
+                chat_id=TELEGRAM_CHAT_ID
             )
             
             self.initialized = True
@@ -671,8 +675,8 @@ def main():
             if trading_system.initialize_clients():
                 st.success("System initialized and auto-scheduler started!")
             else:
-                st.error("Failed to initialize system. Check your secrets.")
-                st.info("Make sure you have set all required secrets in .streamlit/secrets.toml")
+                st.error("Failed to initialize system. Check your API credentials.")
+                st.info("Make sure you have set all required API credentials.")
                 return
     
     # Debug mode toggle
