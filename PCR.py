@@ -9,23 +9,30 @@ from scipy.stats import norm
 from pytz import timezone
 import plotly.graph_objects as go
 import io
+import os
 
 # === Supabase Configuration ===
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", "") if hasattr(st, 'secrets') else ""
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "") if hasattr(st, 'secrets') else ""
+# Check if secrets are available and properly configured
+try:
+    SUPABASE_URL = st.secrets.get("SUPABASE_URL", "") 
+    SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
+except Exception:
+    # Fallback to environment variables if secrets aren't available
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 # Initialize Supabase client only if credentials are provided
 supabase_client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
-        import supabase
-        supabase_client = supabase.create_client(SUPABASE_URL, SUPABASE_KEY)
+        from supabase import create_client
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
         st.success("✅ Connected to Supabase")
     except Exception as e:
         st.warning(f"⚠️ Supabase connection failed: {e}")
         supabase_client = None
 else:
-    st.info("ℹ️ Supabase not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.toml to enable data storage.")
+    st.info("ℹ️ Supabase not configured. Add SUPABASE_URL and SUPABASE_KEY to secrets.toml or environment variables to enable data storage.")
 
 # === Streamlit Config ===
 st.set_page_config(page_title="Nifty Options Analyzer", layout="wide")
