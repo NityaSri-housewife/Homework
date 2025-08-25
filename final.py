@@ -89,8 +89,9 @@ if 'pcr_history' not in st.session_state:
 trade_lock = threading.Lock()
 
 # === Telegram Config ===
-TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
-TELEGRAM_CHAT_ID = "5704496584"
+# REPLACE THESE WITH YOUR ACTUAL TELEGRAM BOT CREDENTIALS
+TELEGRAM_BOT_TOKEN = "YOUR_ACTUAL_BOT_TOKEN_HERE"  # Get from @BotFather
+TELEGRAM_CHAT_ID = "YOUR_ACTUAL_CHAT_ID_HERE"      # Get from getUpdates
 
 # === Supabase Trade Table Functions ===
 
@@ -427,11 +428,18 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        response = requests.post(url, data=data)
+        response = requests.post(url, data=data, timeout=10)
+        # DEBUG: Show response in console
+        print(f"Telegram API Response: {response.status_code}")
+        print(f"Response Text: {response.text}")
+        
         if response.status_code != 200:
-            st.warning("⚠️ Telegram message failed.")
+            st.warning(f"⚠️ Telegram message failed: {response.status_code} - {response.text}")
+            return False
+        return True
     except Exception as e:
         st.error(f"❌ Telegram error: {e}")
+        return False
 
 # === Option Analysis Functions ===
 
