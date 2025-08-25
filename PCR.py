@@ -75,6 +75,163 @@ if 'use_market_logic' not in st.session_state:
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
 
+# === Supabase Data Management Functions ===
+def store_price_data(price):
+    """Store price data in Supabase"""
+    if not supabase_client:
+        return
+        
+    try:
+        data = {
+            "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
+            "price": price,
+            "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
+        }
+        supabase_client.table("price_history").insert(data).execute()
+    except Exception as e:
+        st.error(f"Error storing price data: {e}")
+
+def get_price_history(minutes=60):
+    """Get historical price data from Supabase"""
+    if not supabase_client:
+        return pd.DataFrame(columns=["Time", "Spot"])
+        
+    try:
+        # Calculate time threshold
+        from datetime import timedelta
+        time_threshold = (datetime.now(timezone("Asia/Kolkata")) - timedelta(minutes=minutes)).isoformat()
+        
+        # Query Supabase for recent price data
+        response = supabase_client.table("price_history") \
+            .select("*") \
+            .gte("timestamp", time_threshold) \
+            .order("timestamp", desc=True) \
+            .execute()
+        
+        # Convert to DataFrame
+        if response.data:
+            df = pd.DataFrame(response.data)
+            df['Time'] = pd.to_datetime(df['timestamp']).dt.strftime("%H:%M:%S")
+            df['Spot'] = df['price']
+            return df[['Time', 'Spot']]
+        else:
+            return pd.DataFrame(columns=["Time", "Spot"])
+    except Exception as e:
+        st.error(f"Error retrieving price history: {e}")
+        return pd.DataFrame(columns=["Time", "Spot"])
+
+def store_trade_log(trade_data):
+    """Store trade log entry in Supabase"""
+    if not supabase_client:
+        return
+        
+    try:
+        # Add timestamp if not present
+        if 'Time' not in trade_data:
+            trade_data['Time'] = datetime.now(timezone("Asia/Kolkata")).strftime("%H:%M:%S")
+        
+        # Prepare data for Supabase
+        supabase_trade_data = {
+            "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
+            "strike": trade_data.get("Strike", 0),
+            "option_type": trade_data.get("Type", ""),
+            "entry_price": trade_data.get("LTP", 0),
+            "target_price": trade_data.get("Target", 0),
+            "stop_loss": trade_data.get("SL", 0),
+            "pcr": trade_data.get("PCR", 0),
+            "pcr_signal": trade_data.get("PCR_Signal", ""),
+            "market_bias": trade_data.get("Market_Bias", ""),
+            "target_hit": trade_data.get("TargetHit", False),
+            "sl_hit": trade_data.get("SLHit", False),
+            "exit_price": trade_data.get("Exit_Price", None),
+            "exit_time": trade_data.get("Exit_Time", None),
+            "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
+        }
+        
+        supabase_client.table("trade_log").insert(supabase_trade_data).execute()
+    except Exception as e:
+        st.error(f"Error storing trade log: {e}")
+
+def get_trade_log():
+    """Get trade log from Supabase"""
+    if not supabase_client:
+        return []
+        
+    try:
+        response = supabase_client.table("trade_log") \
+            .select("*") \
+            .order("timestamp", desc=True) \
+            .execute()
+        
+        if response.data:
+            return response.data
+        else:
+            return []
+    except Exception as e:
+        st.error(f"Error retrieving trade log: {e}")
+        return []
+
+def check_target_sl_hits(current_price):
+    """Check if any active trades have hit target or stop loss"""
+    if not supabase_client:
+        return
+        
+    try:
+        # Get active trades (where target_hit and sl_hit are false)
+        response = supabase_client.table("trade_log") \
+            .select("*") \
+            .eq("target_hit", False) \
+            .eq("sl_hit", False) \
+            .execute()
+        
+        if response.data:
+            for trade in response.data:
+                strike = trade['strike']
+                option_type = trade['option_type']
+                entry_price = trade['entry_price']
+                target_price = trade['target_price']
+                stop_loss = trade['stop_loss']
+                
+                # Check if target or SL hit
+                target_hit = False
+                sl_hit = False
+                
+                if option_type == 'CE':
+                    if current_price >= target_price:
+                        target_hit = True
+                    elif current_price <= stop_loss:
+                        sl_hit = True
+                elif option_type == 'PE':
+                    if current_price <= target_price:
+                        target_hit = True
+                    elif current_price >= stop_loss:
+                        sl_hit = True
+                
+                # Update trade if target or SL hit
+                if target_hit or sl_hit:
+                    update_data = {
+                        "target_hit": target_hit,
+                        "sl_hit": sl_hit,
+                        "exit_price": current_price,
+                        "exit_time": datetime.now(timezone("Asia/Kolkata")).isoformat()
+                    }
+                    
+                    supabase_client.table("trade_log") \
+                        .update(update_data) \
+                        .eq("id", trade['id']) \
+                        .execute()
+                    
+                    # Send Telegram notification
+                    message = f"🎯 {'Target' if target_hit else 'Stop Loss'} Hit!\n"
+                    message += f"Strike: {strike} {option_type}\n"
+                    message += f"Entry: ₹{entry_price}\n"
+                    message += f"Exit: ₹{current_price}\n"
+                    message += f"P&L: ₹{(current_price - entry_price) * 75}"
+                    
+                    send_telegram_message(message)
+    except Exception as e:
+        st.error(f"Error checking target/SL hits: {e}")
+
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
@@ -237,17 +394,39 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
     return entries
 
 def display_enhanced_trade_log():
-    if not st.session_state.trade_log:
+    # Get trade log from Supabase
+    trade_data = get_trade_log()
+    if not trade_data:
         st.info("No trades logged yet")
         return
+    
     st.markdown("### 📜 Enhanced Trade Log")
-    df_trades = pd.DataFrame(st.session_state.trade_log)
+    df_trades = pd.DataFrame(trade_data)
+    
+    # Rename columns for display
+    df_trades.rename(columns={
+        'option_type': 'Type',
+        'strike': 'Strike',
+        'entry_price': 'LTP',
+        'target_price': 'Target',
+        'stop_loss': 'SL',
+        'pcr': 'PCR',
+        'pcr_signal': 'PCR_Signal',
+        'market_bias': 'Market_Bias',
+        'target_hit': 'TargetHit',
+        'sl_hit': 'SLHit',
+        'exit_price': 'Exit_Price',
+        'exit_time': 'Exit_Time'
+    }, inplace=True)
+    
+    # Calculate current price and P&L if needed
     if 'Current_Price' not in df_trades.columns:
         df_trades['Current_Price'] = df_trades['LTP'] * np.random.uniform(0.8, 1.3, len(df_trades))
         df_trades['Unrealized_PL'] = (df_trades['Current_Price'] - df_trades['LTP']) * 75
         df_trades['Status'] = df_trades['Unrealized_PL'].apply(
             lambda x: '🟢 Profit' if x > 0 else '🔴 Loss' if x < -100 else '🟡 Breakeven'
         )
+    
     def color_pnl(row):
         colors = []
         for col in row.index:
@@ -261,10 +440,13 @@ def display_enhanced_trade_log():
             else:
                 colors.append('')
         return colors
+    
     styled_trades = df_trades.style.apply(color_pnl, axis=1)
     st.dataframe(styled_trades, use_container_width=True)
+    
     total_pl = df_trades['Unrealized_PL'].sum()
     win_rate = len(df_trades[df_trades['Unrealized_PL'] > 0]) / len(df_trades) * 100
+    
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Total P&L", f"₹{total_pl:,.0f}")
@@ -290,7 +472,9 @@ def create_export_data(df_summary, trade_log, spot_price):
 def handle_export_data(df_summary, spot_price):
     if 'export_data' in st.session_state and st.session_state.export_data:
         try:
-            excel_data, filename = create_export_data(df_summary, st.session_state.trade_log, spot_price)
+            # Get trade log from Supabase
+            trade_data = get_trade_log()
+            excel_data, filename = create_export_data(df_summary, trade_data, spot_price)
             st.download_button(
                 label="📥 Download Excel Report",
                 data=excel_data,
@@ -305,13 +489,17 @@ def handle_export_data(df_summary, spot_price):
             st.session_state.export_data = False
 
 def plot_price_with_sr():
-    price_df = st.session_state['price_data'].copy()
+    # Get price data from Supabase
+    price_df = get_price_history(60)  # Get last 60 minutes of data
+    
     if price_df.empty or price_df['Spot'].isnull().all():
         st.info("Not enough data to show price action chart yet.")
         return
+    
     price_df['Time'] = pd.to_datetime(price_df['Time'])
     support_zone = st.session_state.get('support_zone', (None, None))
     resistance_zone = st.session_state.get('resistance_zone', (None, None))
+    
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=price_df['Time'], 
@@ -320,6 +508,7 @@ def plot_price_with_sr():
         name='Spot Price',
         line=dict(color='blue', width=2)
     ))
+    
     if all(support_zone) and None not in support_zone:
         fig.add_shape(
             type="rect",
@@ -343,6 +532,7 @@ def plot_price_with_sr():
             name='Support High',
             line=dict(color='green', dash='dot')
         ))
+    
     if all(resistance_zone) and None not in resistance_zone:
         fig.add_shape(
             type="rect",
@@ -366,6 +556,7 @@ def plot_price_with_sr():
             name='Resistance High',
             line=dict(color='red', dash='dot')
         ))
+    
     fig.update_layout(
         title="Nifty Spot Price Action with Support & Resistance",
         xaxis_title="Time",
@@ -434,20 +625,6 @@ def color_pcr(val):
         return 'background-color: #FFFFE0; color: black'
 
 # === Market Logic Functions ===
-def store_price_data(price):
-    """Store price data in Supabase"""
-    if not supabase_client:
-        return
-        
-    try:
-        data = {
-            "timestamp": datetime.now(timezone("Asia/Kolkata")).isoformat(),
-            "price": price
-        }
-        supabase_client.table("price_history").insert(data).execute()
-    except Exception as e:
-        st.error(f"Error storing price data: {e}")
-
 def store_option_chain_data(option_chain_data):
     """Store option chain data in Supabase"""
     if not supabase_client:
@@ -465,7 +642,8 @@ def store_option_chain_data(option_chain_data):
                 "call_oi": row.get('openInterest_CE', 0),
                 "put_oi": row.get('openInterest_PE', 0),
                 "call_pcr": row.get('PCR_CE', 0),
-                "put_pcr": row.get('PCR_PE', 0)
+                "put_pcr": row.get('PCR_PE', 0),
+                "created_at": datetime.now(timezone("Asia/Kolkata")).isoformat()
             })
         
         # Insert data in batches
@@ -483,22 +661,26 @@ def get_historical_data(minutes=10):
         return pd.DataFrame(), pd.DataFrame()
         
     try:
+        # Calculate time threshold
+        from datetime import timedelta
+        time_threshold = (datetime.now(timezone("Asia/Kolkata")) - timedelta(minutes=minutes)).isoformat()
+        
         # Get price history
         price_response = supabase_client.table("price_history") \
             .select("*") \
+            .gte("timestamp", time_threshold) \
             .order("timestamp", desc=True) \
-            .limit(100) \
             .execute()
         
         # Get option chain history
         option_chain_response = supabase_client.table("option_chain_history") \
             .select("*") \
+            .gte("timestamp", time_threshold) \
             .order("timestamp", desc=True) \
-            .limit(500) \
             .execute()
         
-        price_df = pd.DataFrame(price_response.data)
-        option_chain_df = pd.DataFrame(option_chain_response.data)
+        price_df = pd.DataFrame(price_response.data) if price_response.data else pd.DataFrame()
+        option_chain_df = pd.DataFrame(option_chain_response.data) if option_chain_response.data else pd.DataFrame()
         
         return price_df, option_chain_df
     except Exception as e:
@@ -566,6 +748,7 @@ def apply_market_logic(price_df, option_chain_df):
 def analyze():
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
+    
     try:
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
@@ -589,8 +772,11 @@ def analyze():
         expiry = data['records']['expiryDates'][0]
         underlying = data['records']['underlyingValue']
 
-        # Store price data
+        # Store price data in Supabase
         store_price_data(underlying)
+        
+        # Check for target/SL hits
+        check_target_sl_hits(underlying)
 
         # Open Interest Change Comparison
         total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / 100000
@@ -671,14 +857,17 @@ def analyze():
                     Reason: {signal['reason']}
                     """)
                     
-                    st.session_state.trade_log.append({
+                    trade_data = {
                         "Time": now.strftime("%H:%M:%S"),
                         "Strike": signal['strike'],
                         "Type": 'CE' if 'CALL' in signal['type'] else 'PE',
                         "LTP": signal['ltp'],
                         "Target": round(signal['ltp'] * 1.2, 2),
                         "SL": round(signal['ltp'] * 0.8, 2)
-                    })
+                    }
+                    
+                    # Store trade in Supabase
+                    store_trade_log(trade_data)
                     
                     send_telegram_message(
                         f"📅 EXPIRY DAY SIGNAL\n"
@@ -808,7 +997,7 @@ def analyze():
             )
         )
 
-        # Store option chain data
+        # Store option chain data in Supabase
         store_option_chain_data(df_summary)
 
         # Apply market logic if enabled
@@ -849,8 +1038,11 @@ def analyze():
         atm_signal, suggested_trade = "No Signal", ""
         signal_sent = False
 
-        last_trade = st.session_state.trade_log[-1] if st.session_state.trade_log else None
-        if last_trade and not (last_trade.get("TargetHit", False) or last_trade.get("SLHit", False)):
+        # Get the latest trade from Supabase to check if we have an active position
+        trade_data = get_trade_log()
+        last_trade = trade_data[0] if trade_data else None
+        
+        if last_trade and not (last_trade.get("target_hit", False) or last_trade.get("sl_hit", False)):
             pass
         else:
             for row in bias_results:
@@ -920,7 +1112,7 @@ def analyze():
                     f"📈 Resistance Zone: {resistance_str}"
                 )
 
-                st.session_state.trade_log.append({
+                trade_data = {
                     "Time": now.strftime("%H:%M:%S"),
                     "Strike": row['Strike'],
                     "Type": option_type,
@@ -932,7 +1124,10 @@ def analyze():
                     "PCR": df_summary[df_summary['Strike'] == row['Strike']]['PCR'].values[0],
                     "PCR_Signal": pcr_signal,
                     "Market_Bias": st.session_state.market_bias  # Added market bias to trade log
-                })
+                }
+
+                # Store trade in Supabase
+                store_trade_log(trade_data)
 
                 signal_sent = True
                 break
@@ -971,9 +1166,27 @@ def analyze():
             
             st.dataframe(styled_df)
         
-        if st.session_state.trade_log:
+        # Display trade log from Supabase
+        trade_data = get_trade_log()
+        if trade_data:
             st.markdown("### 📜 Trade Log")
-            st.dataframe(pd.DataFrame(st.session_state.trade_log))
+            df_trades = pd.DataFrame(trade_data)
+            # Rename columns for display
+            df_trades.rename(columns={
+                'option_type': 'Type',
+                'strike': 'Strike',
+                'entry_price': 'LTP',
+                'target_price': 'Target',
+                'stop_loss': 'SL',
+                'pcr': 'PCR',
+                'pcr_signal': 'PCR_Signal',
+                'market_bias': 'Market_Bias',
+                'target_hit': 'TargetHit',
+                'sl_hit': 'SLHit',
+                'exit_price': 'Exit_Price',
+                'exit_time': 'Exit_Time'
+            }, inplace=True)
+            st.dataframe(df_trades)
 
         # === Enhanced Functions Display ===
         st.markdown("---")
