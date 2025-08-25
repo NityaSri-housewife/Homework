@@ -692,7 +692,7 @@ def analyze():
         st.session_state.previous_price = underlying
 
         # Set dynamic PCR thresholds based on VIX
-        if vix_value > 12.50:
+        if vix_value > 12:
             st.session_state.pcr_threshold_bull = 2.0
             st.session_state.pcr_threshold_bear = 0.4
             volatility_status = "High Volatility"
@@ -998,9 +998,19 @@ def analyze():
             - Filter {'ACTIVE' if st.session_state.use_pcr_filter else 'INACTIVE'}
             
             ℹ️ **OI + Price Signal Interpretation**:
-                        
+            - 🟢 **Long Build-up**: Price ↑ + OI ↑ (Bullish)
+            - 🔴 **Short Build-up**: Price ↓ + OI ↑ (Bearish)  
+            - 🟡 **Long Covering**: Price ↓ + OI ↓ (Bearish unwinding)
+            - 🔵 **Short Covering**: Price ↑ + OI ↓ (Bullish unwinding)
+            - ⚪ **Neutral**: No significant movement
+            
             ℹ️ **Market Logic**:
-                        
+            - Put PCR > Call PCR + Price Falling → Bearish
+            - Put PCR > Call PCR + Price Rising → Bullish
+            - Call PCR > Put PCR + Price Rising → Bullish
+            - Call PCR > Put PCR + Price Falling → Bearish
+            """)
+            
             def color_pcr(val):
                 if val > st.session_state.pcr_threshold_bull:
                     return 'background-color: #90EE90; color: black'
