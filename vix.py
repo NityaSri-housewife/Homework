@@ -385,7 +385,7 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("15:40", "%H:%M").time()
+        market_end = datetime.strptime("19:40", "%H:%M").time()
 
         # Check market hours
         if current_day >= 5 or not (market_start <= current_time <= market_end):
