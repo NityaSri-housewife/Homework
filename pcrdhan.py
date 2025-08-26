@@ -1176,7 +1176,6 @@ df_summary['PCR'] = np.where(
     0,
     df_summary['PCR']
 )
-        )
 
         df_summary['PCR'] = df_summary['PCR'].round(2)
         df_summary['PCR_Signal'] = np.where(
