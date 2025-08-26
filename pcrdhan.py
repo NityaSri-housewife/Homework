@@ -984,6 +984,10 @@ def analyze():
             if row['impliedVolatility_PE'] > 0:
                 greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
                 df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
+                ['Delta_CE','Gamma_CE','Vega_CE','Theta_CE','Rho_CE',
+              'Delta_PE','Gamma_PE','Vega_PE','Theta_PE','Rho_PE']:
+    if greek not in df.columns:
+        df[greek] = 0
 
         # Continue with your existing analysis logic...
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
