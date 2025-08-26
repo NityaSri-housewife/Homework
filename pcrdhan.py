@@ -964,8 +964,12 @@ def analyze():
             if f"{old_col}_PE" in df.columns:
                 df.rename(columns={f"{old_col}_PE": f"{new_col}_PE"}, inplace=True)
         
+        # Calculate change in open interest (CORRECTED)
+        df['changeinOpenInterest_CE'] = df['openInterest_CE'] - df['previousOpenInterest_CE']
+        df['changeinOpenInterest_PE'] = df['openInterest_PE'] - df['previousOpenInterest_PE']
+        
         # Add missing columns with default values
-        for col in ['changeinOpenInterest_CE', 'changeinOpenInterest_PE', 'impliedVolatility_CE', 'impliedVolatility_PE']:
+        for col in ['impliedVolatility_CE', 'impliedVolatility_PE']:
             if col not in df.columns:
                 df[col] = 0
         
@@ -1104,11 +1108,6 @@ def analyze():
             return
             
         # Non-expiry day processing continues...
-        # ... [rest of your non-expiry day analysis code remains the same]
-
-        # The rest of your analysis logic remains largely the same
-        # You'll need to adjust column names and data processing as needed
-
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
             if abs(row['strikePrice'] - atm_strike) > 100:
