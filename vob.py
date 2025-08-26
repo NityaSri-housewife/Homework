@@ -1,6 +1,7 @@
 import requests
 import time
 from datetime import datetime, timedelta
+import pytz
 import streamlit as st
 from supabase import create_client
 import telegram
@@ -30,6 +31,9 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Telegram bot
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
+# IST timezone
+IST = pytz.timezone("Asia/Kolkata")
+
 # ---------------------------
 # FUNCTIONS
 # ---------------------------
@@ -41,7 +45,6 @@ def send_telegram(message):
         st.error(f"Error sending Telegram message: {e}")
 
 def get_dhan_token():
-    # CORRECTED Dhan API endpoint (added /v2/)
     url = "https://api.dhan.co/v2/oauth/token"
     payload = {
         "client_id": DHAN_CLIENT_ID, 
@@ -60,7 +63,6 @@ def get_dhan_token():
         return None
 
 def fetch_intraday_data(token):
-    # CORRECTED Dhan API endpoint (added /v2/)
     url = "https://api.dhan.co/v2/charts/intraday"
     headers = {
         "accept": "application/json", 
@@ -68,7 +70,7 @@ def fetch_intraday_data(token):
         "Content-Type": "application/json"
     }
     
-    now = datetime.now()
+    now = datetime.now(IST)
     from_date = (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
     to_date = now.strftime("%Y-%m-%d %H:%M:%S")
     
@@ -113,9 +115,7 @@ def detect_vob(candles):
 
 def store_in_supabase(candle, signal):
     try:
-        # Convert timestamp to proper format if needed
         timestamp = candle.get("timestamp", int(time.time() * 1000))
-        
         supabase.table(TABLE_NAME).insert({
             "timestamp": timestamp,
             "open": candle["open"],
@@ -140,7 +140,6 @@ status = st.empty()
 # MAIN LOGIC
 # ---------------------------
 
-# Use Streamlit's built-in refresh capability instead of infinite loop
 if 'last_run' not in st.session_state:
     st.session_state.last_run = 0
 
@@ -156,20 +155,21 @@ if current_time - st.session_state.last_run >= 120:  # 2 minutes
             latest_candle = candles[-1]
             store_in_supabase(latest_candle, signal)
             
+            now_ist = datetime.now(IST)
             if signal:
                 send_telegram(signal)
-                status.info(f"{datetime.now().strftime('%H:%M:%S')} - {signal}")
+                status.info(f"{now_ist.strftime('%H:%M:%S')} - {signal}")
             else:
-                status.info(f"{datetime.now().strftime('%H:%M:%S')} - Monitoring... 🔄")
+                status.info(f"{now_ist.strftime('%H:%M:%S')} - Monitoring... 🔄")
         else:
-            status.info(f"{datetime.now().strftime('%H:%M:%S')} - No data received")
+            status.info(f"{datetime.now(IST).strftime('%H:%M:%S')} - No data received")
     else:
-        status.info(f"{datetime.now().strftime('%H:%M:%S')} - Authentication failed")
+        status.info(f"{datetime.now(IST).strftime('%H:%M:%S')} - Authentication failed")
 
-# Add a refresh button
+# Manual refresh button
 if st.button("Manual Refresh"):
     st.session_state.last_run = 0
     st.rerun()
 
-# Show last update time
-st.write(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# Show last update time in IST
+st.write(f"Last updated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}")
