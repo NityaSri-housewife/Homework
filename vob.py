@@ -21,7 +21,7 @@ SUPABASE_KEY = "your_supabase_key"
 TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
 TELEGRAM_CHAT_ID = "your_telegram_chat_id"
 DHAN_ACCESS_TOKEN = "your_dhan_access_token"
-DHAN_CLIENT_ID = "your_dhan_client_id"
+DHAN_CLIENT_ID = "1107984806"
 
 # Initialize clients
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
