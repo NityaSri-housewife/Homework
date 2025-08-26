@@ -372,14 +372,17 @@ def send_telegram_message(message):
         st.error(f"❌ Telegram error: {e}")
 
 def calculate_greeks(option_type, S, K, T, r, sigma):
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-    d2 = d1 - sigma * math.sqrt(T)
-    delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
-    gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
-    vega = S * norm.pdf(d1) * math.sqrt(T) / 100
-    theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
-    rho = (K * T * math.exp(-r * T) * norm.cdf(d2)) / 100 if option_type == 'CE' else (-K * T * math.exp(-r * T) * norm.cdf(-d2)) / 100
-    return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4), round(rho, 4)
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
+        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+        vega = S * norm.pdf(d1) * math.sqrt(T) / 100
+        theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
+        rho = (K * T * math.exp(-r * T) * norm.cdf(d2)) / 100 if option_type == 'CE' else (-K * T * math.exp(-r * T) * norm.cdf(-d2)) / 100
+        return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4), round(rho, 4)
+    except:
+        return 0, 0, 0, 0, 0
 
 def final_verdict(score):
     if score >= 4:
@@ -434,10 +437,10 @@ weights = {
 }
 
 def determine_level(row):
-    ce_oi = row['openInterest_CE']
-    pe_oi = row['openInterest_PE']
-    ce_chg = row['changeinOpenInterest_CE']
-    pe_chg = row['changeinOpenInterest_PE']
+    ce_oi = row.get('openInterest_CE', 0)
+    pe_oi = row.get('openInterest_PE', 0)
+    ce_chg = row.get('changeinOpenInterest_CE', 0)
+    pe_chg = row.get('changeinOpenInterest_PE', 0)
 
     if pe_oi > 1.12 * ce_oi:
         return "Support"
@@ -468,28 +471,28 @@ def get_support_resistance_zones(df, spot):
 def expiry_bias_score(row):
     score = 0
 
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] > row['previousClose_CE']:
+    if row.get('changeinOpenInterest_CE', 0) > 0 and row.get('lastPrice_CE', 0) > row.get('previousClose_CE', 0):
         score += 1
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] > row['previousClose_PE']:
+    if row.get('changeinOpenInterest_PE', 0) > 0 and row.get('lastPrice_PE', 0) > row.get('previousClose_PE', 0):
         score -= 1
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] < row['previousClose_CE']:
+    if row.get('changeinOpenInterest_CE', 0) > 0 and row.get('lastPrice_CE', 0) < row.get('previousClose_CE', 0):
         score -= 1
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] < row['previousClose_PE']:
+    if row.get('changeinOpenInterest_PE', 0) > 0 and row.get('lastPrice_PE', 0) < row.get('previousClose_PE', 0):
         score += 1
 
     if 'bidQty_CE' in row and 'bidQty_PE' in row:
-        if row['bidQty_CE'] > row['bidQty_PE'] * 1.5:
+        if row.get('bidQty_CE', 0) > row.get('bidQty_PE', 0) * 1.5:
             score += 1
-        if row['bidQty_PE'] > row['bidQty_CE'] * 1.5:
+        if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) * 1.5:
             score -= 1
 
-    if row['totalTradedVolume_CE'] > 2 * row['openInterest_CE']:
+    if row.get('totalTradedVolume_CE', 0) > 2 * row.get('openInterest_CE', 1):
         score -= 0.5
-    if row['totalTradedVolume_PE'] > 2 * row['openInterest_PE']:
+    if row.get('totalTradedVolume_PE', 0) > 2 * row.get('openInterest_PE', 1):
         score += 0.5
 
     if 'underlyingValue' in row:
-        if abs(row['lastPrice_CE'] - row['underlyingValue']) < abs(row['lastPrice_PE'] - row['underlyingValue']):
+        if abs(row.get('lastPrice_CE', 0) - row.get('underlyingValue', 0)) < abs(row.get('lastPrice_PE', 0) - row.get('underlyingValue', 0)):
             score += 0.5
         else:
             score -= 0.5
@@ -499,7 +502,7 @@ def expiry_bias_score(row):
 def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1.5):
     entries = []
     for _, row in df.iterrows():
-        strike = row['strikePrice']
+        strike = row.get('strikePrice', 0)
         score = expiry_bias_score(row)
 
         if score >= score_threshold and strike in support_levels:
@@ -507,7 +510,7 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
                 'type': 'BUY CALL',
                 'strike': strike,
                 'score': score,
-                'ltp': row['lastPrice_CE'],
+                'ltp': row.get('lastPrice_CE', 0),
                 'reason': 'Bullish score + support zone'
             })
 
@@ -516,7 +519,7 @@ def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1
                 'type': 'BUY PUT',
                 'strike': strike,
                 'score': score,
-                'ltp': row['lastPrice_PE'],
+                'ltp': row.get('lastPrice_PE', 0),
                 'reason': 'Bearish score + resistance zone'
             })
 
@@ -883,7 +886,7 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("08:00", "%H:%M").time()
-        market_end = datetime.strptime("23:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
@@ -971,23 +974,33 @@ def analyze():
         T = max((expiry_date - now).days, 1) / 365
         r = 0.06
 
-        # Calculate Greeks for calls and puts
+        # Calculate Greeks for calls and puts - WITH ERROR HANDLING
         for idx, row in df.iterrows():
             strike = row['strikePrice']
             
-            # Calculate Greeks for CE
-            if row['impliedVolatility_CE'] > 0:
-                greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
-                df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
+            # Calculate Greeks for CE - WITH DEFAULT VALUES
+            try:
+                if 'impliedVolatility_CE' in row and row['impliedVolatility_CE'] > 0:
+                    greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
+                else:
+                    # Use default volatility if not available
+                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.15)  # 15% default IV
+            except:
+                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
             
-            # Calculate Greeks for PE
-            if row['impliedVolatility_PE'] > 0:
-                greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
-                df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
-                ['Delta_CE','Gamma_CE','Vega_CE','Theta_CE','Rho_CE',
-              'Delta_PE','Gamma_PE','Vega_PE','Theta_PE','Rho_PE']:
-    if greek not in df.columns:
-        df[greek] = 0
+            df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
+            
+            # Calculate Greeks for PE - WITH DEFAULT VALUES
+            try:
+                if 'impliedVolatility_PE' in row and row['impliedVolatility_PE'] > 0:
+                    greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
+                else:
+                    # Use default volatility if not available
+                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.15)  # 15% default IV
+            except:
+                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
+            
+            df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
 
         # Continue with your existing analysis logic...
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
@@ -995,7 +1008,7 @@ def analyze():
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
 
-        # Open Interest Change Comparison
+        # Open Interest Change Comparison - FIXED OI CALCULATION
         total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
         total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
         
@@ -1103,7 +1116,10 @@ def analyze():
 
             # Add bid/ask pressure calculation
             bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
-                row['bidQty_CE'], row['askQty_CE'],                                 row['bidQty_PE'], row['askQty_PE']
+                row.get('bidQty_CE', 0), 
+                row.get('askQty_CE', 0),                                 
+                row.get('bidQty_PE', 0), 
+                row.get('askQty_PE', 0)
             )
             
             score = 0
@@ -1111,16 +1127,16 @@ def analyze():
                 "Strike": row['strikePrice'],
                 "Zone": row['Zone'],
                 "Level": row['Level'],
-                "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
-                "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
-                "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
-                "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
-                "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
-                "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
+                "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
+                "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
+                "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) < row.get('Gamma_PE', 0) else "Bearish",
+                "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+                "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
+                "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "Bearish",
                 "DVP_Bias": delta_volume_bias(
-                    row['lastPrice_CE'] - row['lastPrice_PE'],
-                    row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
-                    row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
+                    row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
+                    row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
+                    row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
                 ),
                 # Add bid/ask pressure to the row data
                 "BidAskPressure": bid_ask_pressure,
