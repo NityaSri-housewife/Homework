@@ -1,152 +1,251 @@
+import pandas as pd
+import numpy as np
+import talib
 import requests
 import time
 from datetime import datetime, timedelta
 import pytz
-import streamlit as st
-from supabase import create_client
 import telegram
+from supabase import create_client, Client
+import streamlit as st
+import schedule
+import threading
+import json
+from typing import Tuple, List, Dict, Any
 
-st.set_page_config(page_title="NIFTY VOB Notifier", layout="wide")
+# Configuration
+IST = pytz.timezone('Asia/Kolkata')
+DHAN_BASE_URL = "https://api.dhan.co/v2"
+SUPABASE_URL = "your_supabase_url"
+SUPABASE_KEY = "your_supabase_key"
+TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
+TELEGRAM_CHAT_ID = "your_telegram_chat_id"
+DHAN_ACCESS_TOKEN = "your_dhan_access_token"
+DHAN_CLIENT_ID = "your_dhan_client_id"
 
-# ---------------------------
-# CONFIGURATION
-# ---------------------------
+# Initialize clients
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
-# Secrets
-DHAN_ACCESS_TOKEN = st.secrets["dhan"]["access_token"]  # Direct token
-TELEGRAM_TOKEN = st.secrets["telegram"]["token"]
-TELEGRAM_CHAT_ID = st.secrets["telegram"]["chat_id"]
-SUPABASE_URL = st.secrets["supabase"]["url"]
-SUPABASE_KEY = st.secrets["supabase"]["key"]
+def get_nifty_data() -> pd.DataFrame:
+    """Fetch Nifty 50 data from Dhan API"""
+    headers = {
+        'access-token': DHAN_ACCESS_TOKEN,
+        'client-id': DHAN_CLIENT_ID,
+        'Content-Type': 'application/json'
+    }
+    
+    # Nifty 50 security ID (example - replace with actual ID from Dhan)
+    nifty_security_id = "999920000"  # This needs to be verified from Dhan instrument list
+    
+    # Get current time in IST
+    end_time = datetime.now(IST)
+    start_time = end_time - timedelta(hours=2)  # Get 2 hours of data for 3-min candles
+    
+    payload = {
+        "securityId": nifty_security_id,
+        "exchangeSegment": "IDX_I",  # Nifty Index
+        "instrument": "INDEX",
+        "interval": "3",  # 3-minute interval
+        "fromDate": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "toDate": end_time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    try:
+        response = requests.post(
+            f"{DHAN_BASE_URL}/charts/intraday",
+            headers=headers,
+            json=payload
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            df = pd.DataFrame({
+                'timestamp': data['timestamp'],
+                'open': data['open'],
+                'high': data['high'],
+                'low': data['low'],
+                'close': data['close']
+            })
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(IST)
+            return df
+        else:
+            st.error(f"Error fetching data: {response.status_code}")
+            return pd.DataFrame()
+            
+    except Exception as e:
+        st.error(f"Exception in fetching data: {str(e)}")
+        return pd.DataFrame()
 
-SECURITY_ID = 13  # NIFTY 50 index security ID
-EXCHANGE_SEGMENT = "IDX_I"
-INTERVAL = "3"  # 3-min chart
-TABLE_NAME = "vob_history"
+def save_to_supabase(df: pd.DataFrame, signal_data: Dict[str, Any]):
+    """Save data and signals to Supabase"""
+    try:
+        # Save candle data
+        records = df.to_dict('records')
+        for record in records:
+            supabase.table("nifty_3min_candles").upsert(record).execute()
+        
+        # Save signal
+        if signal_data:
+            supabase.table("vob_signals").insert(signal_data).execute()
+            
+    except Exception as e:
+        st.error(f"Error saving to Supabase: {str(e)}")
 
-# Supabase client
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Telegram bot
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
-
-# IST timezone
-IST = pytz.timezone("Asia/Kolkata")
-
-# ---------------------------
-# FUNCTIONS
-# ---------------------------
-
-def send_telegram(message):
+def send_telegram_message(message: str):
+    """Send notification via Telegram"""
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        st.write(f"Telegram message sent: {message}")
     except Exception as e:
-        st.error(f"Error sending Telegram message: {e}")
+        st.error(f"Error sending Telegram message: {str(e)}")
 
-def fetch_intraday_data():
-    url = "https://api.dhan.co/v2/charts/intraday"
-    headers = {
-        "accept": "application/json",
-        "Authorization": f"Bearer {DHAN_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    now = datetime.now(IST)
-    from_date = (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-    to_date = now.strftime("%Y-%m-%d %H:%M:%S")
-
-    data = {
-        "securityId": SECURITY_ID,
-        "exchangeSegment": EXCHANGE_SEGMENT,
-        "instrument": "INDEX",
-        "interval": INTERVAL,
-        "fromDate": from_date,
-        "toDate": to_date
-    }
-
-    try:
-        resp = requests.post(url, json=data, headers=headers)
-        resp.raise_for_status()
-        return resp.json().get("data", [])
-    except Exception as e:
-        st.error(f"Error fetching Dhan data: {e}")
-        st.error(f"Response: {resp.text if 'resp' in locals() else 'No response'}")
-        return []
-
-def detect_vob(candles):
-    if not candles or len(candles) < 10:
-        return None
+def vob_strategy(df: pd.DataFrame, length1: int = 5) -> Tuple[List[Dict], List[Dict], pd.DataFrame]:
+    """
+    VOB Strategy implementation
+    Returns: bull_zones, bear_zones, enriched_df
+    """
+    if len(df) < length1 * 2:
+        return [], [], df
     
-    candle = candles[-1]  # latest candle
-    open_price = candle["open"]
-    close_price = candle["close"]
-    volume = candle["volume"]
-
-    # Calculate average volume of last 10 candles
-    recent_candles = candles[-10:] if len(candles) >= 10 else candles
-    avg_volume = sum(c["volume"] for c in recent_candles) / len(recent_candles)
-    threshold_volume = avg_volume * 1.5
-
-    if volume > threshold_volume:
-        if close_price > open_price:
-            return "Bullish VOB formed 📈"
-        elif close_price < open_price:
-            return "Bearish VOB formed 📉"
-    return None
-
-def store_in_supabase(candle, signal):
-    try:
-        timestamp = candle.get("timestamp", int(time.time() * 1000))
-        supabase.table(TABLE_NAME).insert({
-            "timestamp": timestamp,
-            "open": candle["open"],
-            "high": candle["high"],
-            "low": candle["low"],
-            "close": candle["close"],
-            "volume": candle["volume"],
-            "oi": candle.get("oi", 0),
-            "signal": signal
-        }).execute()
-    except Exception as e:
-        st.error(f"Error storing in Supabase: {e}")
-
-# ---------------------------
-# STREAMLIT UI
-# ---------------------------
-
-st.title("NIFTY VOB Notifier (3-min chart, auto-refresh 2-min)")
-status = st.empty()
-
-# ---------------------------
-# MAIN LOGIC
-# ---------------------------
-
-if 'last_run' not in st.session_state:
-    st.session_state.last_run = 0
-
-current_time = time.time()
-if current_time - st.session_state.last_run >= 120:  # 2 minutes
-    st.session_state.last_run = current_time
+    # Calculate required indicators
+    df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+    df['rsi'] = talib.RSI(df['close'], timeperiod=14)
     
-    candles = fetch_intraday_data()
-    if candles:
-        signal = detect_vob(candles)
-        latest_candle = candles[-1]
-        store_in_supabase(latest_candle, signal)
+    # Calculate VOB specific logic
+    df['trend'] = np.where(df['close'] > df['close'].rolling(length1).mean(), 1, -1)
+    df['volatility'] = df['atr'] / df['close'] * 100
+    
+    # Identify zones (simplified logic - adapt based on your specific VOB strategy)
+    bull_zones = []
+    bear_zones = []
+    
+    for i in range(length1, len(df)):
+        current = df.iloc[i]
+        prev = df.iloc[i-1]
         
-        now_ist = datetime.now(IST)
-        if signal:
-            send_telegram(signal)
-            status.info(f"{now_ist.strftime('%H:%M:%S')} - {signal}")
-        else:
-            status.info(f"{now_ist.strftime('%H:%M:%S')} - Monitoring... 🔄")
+        # Bullish zone conditions (example)
+        if (current['trend'] == 1 and 
+            current['rsi'] > 50 and 
+            current['volatility'] > prev['volatility'] and
+            current['close'] > current['open']):
+            
+            bull_zone = {
+                'timestamp': current['timestamp'],
+                'price': current['close'],
+                'rsi': current['rsi'],
+                'volatility': current['volatility'],
+                'trend': current['trend']
+            }
+            bull_zones.append(bull_zone)
+        
+        # Bearish zone conditions (example)
+        elif (current['trend'] == -1 and 
+              current['rsi'] < 50 and 
+              current['volatility'] > prev['volatility'] and
+              current['close'] < current['open']):
+            
+            bear_zone = {
+                'timestamp': current['timestamp'],
+                'price': current['close'],
+                'rsi': current['rsi'],
+                'volatility': current['volatility'],
+                'trend': current['trend']
+            }
+            bear_zones.append(bear_zone)
+    
+    return bull_zones, bear_zones, df
+
+def run_strategy():
+    """Main function to run the strategy"""
+    st.write(f"Running strategy at {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    
+    # Fetch data
+    df = get_nifty_data()
+    if df.empty:
+        st.warning("No data fetched")
+        return
+    
+    # Run VOB strategy
+    bull_zones, bear_zones, result_df = vob_strategy(df)
+    
+    # Prepare signal data
+    signal_data = None
+    message = ""
+    
+    if bull_zones:
+        latest_bull = bull_zones[-1]
+        signal_data = {
+            'timestamp': latest_bull['timestamp'].isoformat(),
+            'signal_type': 'BULL',
+            'price': latest_bull['price'],
+            'rsi': latest_bull['rsi'],
+            'volatility': latest_bull['volatility'],
+            'created_at': datetime.now(IST).isoformat()
+        }
+        message = f"🚀 BULL Signal detected!\nTime: {latest_bull['timestamp']}\nPrice: {latest_bull['price']}\nRSI: {latest_bull['rsi']:.2f}"
+    
+    elif bear_zones:
+        latest_bear = bear_zones[-1]
+        signal_data = {
+            'timestamp': latest_bear['timestamp'].isoformat(),
+            'signal_type': 'BEAR',
+            'price': latest_bear['price'],
+            'rsi': latest_bear['rsi'],
+            'volatility': latest_bear['volatility'],
+            'created_at': datetime.now(IST).isoformat()
+        }
+        message = f"🐻 BEAR Signal detected!\nTime: {latest_bear['timestamp']}\nPrice: {latest_bear['price']}\nRSI: {latest_bear['rsi']:.2f}"
+    
+    # Save data and send notification
+    save_to_supabase(result_df, signal_data)
+    
+    if message:
+        send_telegram_message(message)
+        st.success(message)
     else:
-        status.info(f"{datetime.now(IST).strftime('%H:%M:%S')} - No data received")
+        st.write("No signals detected in this run")
 
-# Manual refresh button
-if st.button("Manual Refresh"):
-    st.session_state.last_run = 0
-    st.rerun()
+def schedule_job():
+    """Schedule the job to run every 3 minutes"""
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
-# Show last update time in IST
-st.write(f"Last updated: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}")
+# Streamlit interface
+def main():
+    st.title("Nifty 50 VOB Strategy Indicator")
+    st.write(f"Current IST Time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    
+    # Manual run button
+    if st.button("Run Strategy Now"):
+        run_strategy()
+    
+    # Display latest data
+    try:
+        latest_data = supabase.table("nifty_3min_candles").select("*").order('timestamp', desc=True).limit(10).execute()
+        if latest_data.data:
+            st.subheader("Latest Candles")
+            st.dataframe(pd.DataFrame(latest_data.data))
+    except Exception as e:
+        st.error(f"Error fetching latest data: {str(e)}")
+    
+    # Display recent signals
+    try:
+        recent_signals = supabase.table("vob_signals").select("*").order('timestamp', desc=True).limit(5).execute()
+        if recent_signals.data:
+            st.subheader("Recent Signals")
+            st.dataframe(pd.DataFrame(recent_signals.data))
+    except Exception as e:
+        st.error(f"Error fetching signals: {str(e)}")
+
+if __name__ == "__main__":
+    # Schedule the job to run every 3 minutes
+    schedule.every(3).minutes.do(run_strategy)
+    
+    # Start the scheduler in a separate thread
+    scheduler_thread = threading.Thread(target=schedule_job, daemon=True)
+    scheduler_thread.start()
+    
+    # Run Streamlit app
+    main()
