@@ -16,11 +16,11 @@ from typing import Tuple, List, Dict, Any
 # Configuration
 IST = pytz.timezone('Asia/Kolkata')
 DHAN_BASE_URL = "https://api.dhan.co/v2"
-SUPABASE_URL = "your_supabase_url"
-SUPABASE_KEY = "your_supabase_key"
-TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
-TELEGRAM_CHAT_ID = "your_telegram_chat_id"
-DHAN_ACCESS_TOKEN = "your_dhan_access_token"
+SUPABASE_URL = "https://jkcbxkczczwxsrymoiqp.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImprY2J4a2N6Y3p3eHNyeW1vaXFwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU4NjQ0MzYsImV4cCI6MjA3MTQ0MDQzNn0.xZaFyEFGmKC2oFUu4DmaOobD_o1-Vq2LN8GGpRSdLGg"
+TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
+TELEGRAM_CHAT_ID = "5704496584"
+DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzU2MjMyMTAzLCJ0b2tlbkNvbnN1bWVyVHlwZSI6IlNFTEYiLCJ3ZWJob29rVXJsIjoiIiwiZGhhbkNsaWVudElkIjoiMTEwNzk4NDgwNiJ9.CZBdtVu2_fVXxu17nzT0e9VBLMu-L-d71xg5ygPG89jMUb7nBJlS_OryR3CiBbPXmMWicc90tGcvJqYTMUk1Pw"
 DHAN_CLIENT_ID = "1107984806"
 
 # Initialize clients
