@@ -41,22 +41,34 @@ def send_telegram(message):
         st.error(f"Error sending Telegram message: {e}")
 
 def get_dhan_token():
-    url = "https://auth.dhan.co/v2/generate-access-token"
-    payload = {"client_id": DHAN_CLIENT_ID, "client_secret": DHAN_CLIENT_SECRET}
+    # Updated Dhan API endpoint
+    url = "https://api.dhan.co/oauth/token"
+    payload = {
+        "client_id": DHAN_CLIENT_ID, 
+        "client_secret": DHAN_CLIENT_SECRET,
+        "grant_type": "client_credentials"
+    }
+    headers = {"Content-Type": "application/json"}
+    
     try:
-        resp = requests.post(url, json=payload)
+        resp = requests.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json()["access_token"]
     except Exception as e:
         st.error(f"Error fetching Dhan token: {e}")
+        st.error(f"Response: {resp.text if 'resp' in locals() else 'No response'}")
         return None
 
 def fetch_intraday_data(token):
-    url = "https://api.dhan.co/v2/charts/intraday"
-    headers = {"accept": "application/json", "access-token": token}
+    url = "https://api.dhan.co/charts/intraday"
+    headers = {
+        "accept": "application/json", 
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
     
     now = datetime.now()
-    from_date = (now - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S")
+    from_date = (now - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
     to_date = now.strftime("%Y-%m-%d %H:%M:%S")
     
     data = {
@@ -64,7 +76,6 @@ def fetch_intraday_data(token):
         "exchangeSegment": EXCHANGE_SEGMENT,
         "instrument": "INDEX",
         "interval": INTERVAL,
-        "oi": True,
         "fromDate": from_date,
         "toDate": to_date
     }
@@ -75,10 +86,11 @@ def fetch_intraday_data(token):
         return resp.json().get("data", [])
     except Exception as e:
         st.error(f"Error fetching Dhan data: {e}")
+        st.error(f"Response: {resp.text if 'resp' in locals() else 'No response'}")
         return []
 
 def detect_vob(candles):
-    if not candles:
+    if not candles or len(candles) < 10:
         return None
     
     candle = candles[-1]  # latest candle
@@ -86,7 +98,9 @@ def detect_vob(candles):
     close_price = candle["close"]
     volume = candle["volume"]
 
-    avg_volume = sum(c["volume"] for c in candles[-10:]) / min(len(candles), 10)
+    # Calculate average volume of last 10 candles
+    recent_candles = candles[-10:] if len(candles) >= 10 else candles
+    avg_volume = sum(c["volume"] for c in recent_candles) / len(recent_candles)
     threshold_volume = avg_volume * 1.5
 
     if volume > threshold_volume:
@@ -98,8 +112,11 @@ def detect_vob(candles):
 
 def store_in_supabase(candle, signal):
     try:
+        # Convert timestamp to proper format if needed
+        timestamp = candle.get("timestamp", int(time.time() * 1000))
+        
         supabase.table(TABLE_NAME).insert({
-            "timestamp": candle["timestamp"],
+            "timestamp": timestamp,
             "open": candle["open"],
             "high": candle["high"],
             "low": candle["low"],
@@ -119,24 +136,39 @@ st.title("NIFTY VOB Notifier (3-min chart, auto-refresh 2-min)")
 status = st.empty()
 
 # ---------------------------
-# MAIN LOOP
+# MAIN LOGIC
 # ---------------------------
 
-token = get_dhan_token()
-if not token:
-    st.stop()
+# Use Streamlit's built-in refresh capability instead of infinite loop
+if 'last_run' not in st.session_state:
+    st.session_state.last_run = 0
 
-while True:
-    candles = fetch_intraday_data(token)
-    signal = detect_vob(candles)
-    if candles:
-        latest_candle = candles[-1]
-        store_in_supabase(latest_candle, signal)
+current_time = time.time()
+if current_time - st.session_state.last_run >= 120:  # 2 minutes
+    st.session_state.last_run = current_time
     
-    if signal:
-        send_telegram(signal)
-        status.info(f"{datetime.now().strftime('%H:%M:%S')} - {signal}")
+    token = get_dhan_token()
+    if token:
+        candles = fetch_intraday_data(token)
+        if candles:
+            signal = detect_vob(candles)
+            latest_candle = candles[-1]
+            store_in_supabase(latest_candle, signal)
+            
+            if signal:
+                send_telegram(signal)
+                status.info(f"{datetime.now().strftime('%H:%M:%S')} - {signal}")
+            else:
+                status.info(f"{datetime.now().strftime('%H:%M:%S')} - Monitoring... 🔄")
+        else:
+            status.info(f"{datetime.now().strftime('%H:%M:%S')} - No data received")
     else:
-        status.info(f"{datetime.now().strftime('%H:%M:%S')} - Monitoring... 🔄")
-    
-    time.sleep(120)  # Refresh every 2 minutes
+        status.info(f"{datetime.now().strftime('%H:%M:%S')} - Authentication failed")
+
+# Add a refresh button
+if st.button("Manual Refresh"):
+    st.session_state.last_run = 0
+    st.rerun()
+
+# Show last update time
+st.write(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
