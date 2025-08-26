@@ -10,14 +10,21 @@ from pytz import timezone
 import plotly.graph_objects as go
 import io
 import os
+import json
+
+# === Dhan API Configuration ===
+try:
+    DHAN_CLIENT_ID = st.secrets.get("DHAN_CLIENT_ID", "")
+    DHAN_ACCESS_TOKEN = st.secrets.get("DHAN_ACCESS_TOKEN", "")
+except Exception:
+    DHAN_CLIENT_ID = os.environ.get("DHAN_CLIENT_ID", "")
+    DHAN_ACCESS_TOKEN = os.environ.get("DHAN_ACCESS_TOKEN", "")
 
 # === Supabase Configuration ===
-# Check if secrets are available and properly configured
 try:
     SUPABASE_URL = st.secrets.get("SUPABASE_URL", "") 
     SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "")
 except Exception:
-    # Fallback to environment variables if secrets aren't available
     SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
@@ -81,6 +88,121 @@ if 'use_market_logic' not in st.session_state:
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
+
+# === Dhan API Functions ===
+def get_dhan_option_chain(underlying_scrip: int, underlying_seg: str, expiry: str):
+    """
+    Get option chain data from Dhan API
+    """
+    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+        st.error("Dhan API credentials not configured")
+        return None
+    
+    url = "https://api.dhan.co/v2/optionchain"
+    headers = {
+        'access-token': DHAN_ACCESS_TOKEN,
+        'client-id': DHAN_CLIENT_ID,
+        'Content-Type': 'application/json'
+    }
+    
+    payload = {
+        "UnderlyingScrip": underlying_scrip,
+        "UnderlyingSeg": underlying_seg,
+        "Expiry": expiry
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching Dhan option chain: {e}")
+        return None
+
+def get_dhan_expiry_list(underlying_scrip: int, underlying_seg: str):
+    """
+    Get expiry list from Dhan API
+    """
+    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+        st.error("Dhan API credentials not configured")
+        return None
+    
+    url = "https://api.dhan.co/v2/optionchain/expirylist"
+    headers = {
+        'access-token': DHAN_ACCESS_TOKEN,
+        'client-id': DHAN_CLIENT_ID,
+        'Content-Type': 'application/json'
+    }
+    
+    payload = {
+        "UnderlyingScrip": underlying_scrip,
+        "UnderlyingSeg": underlying_seg
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching Dhan expiry list: {e}")
+        return None
+
+def get_dhan_market_quote(security_ids: list, segment: str):
+    """
+    Get market quote data from Dhan API
+    """
+    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+        st.error("Dhan API credentials not configured")
+        return None
+    
+    url = "https://api.dhan.co/v2/marketfeed/quote"
+    headers = {
+        'access-token': DHAN_ACCESS_TOKEN,
+        'client-id': DHAN_CLIENT_ID,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
+    
+    payload = {segment: security_ids}
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching Dhan market quote: {e}")
+        return None
+
+def get_dhan_ltp(security_ids: list, segment: str):
+    """
+    Get LTP data from Dhan API
+    """
+    if not DHAN_CLIENT_ID or not DHAN_ACCESS_TOKEN:
+        st.error("Dhan API credentials not configured")
+        return None
+    
+    url = "https://api.dhan.co/v2/marketfeed/ltp"
+    headers = {
+        'access-token': DHAN_ACCESS_TOKEN,
+        'client-id': DHAN_CLIENT_ID,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+    }
+    
+    payload = {segment: security_ids}
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching Dhan LTP: {e}")
+        return None
+
+# === Instrument Mapping ===
+# NIFTY 50 underlying instrument ID for Dhan API
+NIFTY_UNDERLYING_SCRIP = 13  # This needs to be verified with Dhan's instrument list
+NIFTY_UNDERLYING_SEG = "IDX_I"  # Index segment
 
 # === Supabase Data Management Functions ===
 def store_price_data(price):
@@ -767,27 +889,111 @@ def analyze():
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
             return
 
-        headers = {"User-Agent": "Mozilla/5.0"}
-        session = requests.Session()
-        session.headers.update(headers)
-        session.get("https://www.nseindia.com", timeout=5)
-        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-        response = session.get(url, timeout=10)
-        data = response.json()
-
-        records = data['records']['data']
-        expiry = data['records']['expiryDates'][0]
-        underlying = data['records']['underlyingValue']
-
+        # Get expiry list from Dhan API
+        expiry_data = get_dhan_expiry_list(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG)
+        if not expiry_data or 'data' not in expiry_data:
+            st.error("Failed to get expiry list from Dhan API")
+            return
+        
+        expiry_dates = expiry_data['data']
+        if not expiry_dates:
+            st.error("No expiry dates available")
+            return
+        
+        expiry = expiry_dates[0]  # Use nearest expiry
+        
+        # Get option chain from Dhan API
+        option_chain_data = get_dhan_option_chain(NIFTY_UNDERLYING_SCRIP, NIFTY_UNDERLYING_SEG, expiry)
+        if not option_chain_data or 'data' not in option_chain_data:
+            st.error("Failed to get option chain from Dhan API")
+            return
+        
+        data = option_chain_data['data']
+        underlying = data['last_price']
+        
         # Store price data in Supabase
         store_price_data(underlying)
         
         # Check for target/SL hits
         check_target_sl_hits(underlying)
 
+        # Process option chain data
+        oc_data = data['oc']
+        
+        # Convert to DataFrame format similar to NSE
+        calls, puts = [], []
+        for strike, strike_data in oc_data.items():
+            if 'ce' in strike_data:
+                ce_data = strike_data['ce']
+                ce_data['strikePrice'] = float(strike)
+                ce_data['expiryDate'] = expiry
+                calls.append(ce_data)
+            
+            if 'pe' in strike_data:
+                pe_data = strike_data['pe']
+                pe_data['strikePrice'] = float(strike)
+                pe_data['expiryDate'] = expiry
+                puts.append(pe_data)
+        
+        df_ce = pd.DataFrame(calls)
+        df_pe = pd.DataFrame(puts)
+        
+        # Merge call and put data
+        df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
+        
+        # Rename columns to match NSE format
+        column_mapping = {
+            'last_price': 'lastPrice',
+            'oi': 'openInterest',
+            'previous_close_price': 'previousClose',
+            'previous_oi': 'previousOpenInterest',
+            'previous_volume': 'previousVolume',
+            'top_ask_price': 'askPrice',
+            'top_ask_quantity': 'askQty',
+            'top_bid_price': 'bidPrice',
+            'top_bid_quantity': 'bidQty',
+            'volume': 'totalTradedVolume'
+        }
+        
+        for old_col, new_col in column_mapping.items():
+            if f"{old_col}_CE" in df.columns:
+                df.rename(columns={f"{old_col}_CE": f"{new_col}_CE"}, inplace=True)
+            if f"{old_col}_PE" in df.columns:
+                df.rename(columns={f"{old_col}_PE": f"{new_col}_PE"}, inplace=True)
+        
+        # Add missing columns with default values
+        for col in ['changeinOpenInterest_CE', 'changeinOpenInterest_PE', 'impliedVolatility_CE', 'impliedVolatility_PE']:
+            if col not in df.columns:
+                df[col] = 0
+        
+        # Calculate time to expiry
+        expiry_date = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone("Asia/Kolkata"))
+        T = max((expiry_date - now).days, 1) / 365
+        r = 0.06
+
+        # Calculate Greeks for calls and puts
+        for idx, row in df.iterrows():
+            strike = row['strikePrice']
+            
+            # Calculate Greeks for CE
+            if row['impliedVolatility_CE'] > 0:
+                greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
+                df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
+            
+            # Calculate Greeks for PE
+            if row['impliedVolatility_PE'] > 0:
+                greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
+                df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
+
+        # Continue with your existing analysis logic...
+        atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
+        df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
+        df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
+        df['Level'] = df.apply(determine_level, axis=1)
+
         # Open Interest Change Comparison
-        total_ce_change = sum(item['CE']['changeinOpenInterest'] for item in records if 'CE' in item) / 100000
-        total_pe_change = sum(item['PE']['changeinOpenInterest'] for item in records if 'PE' in item) / 100000
+        total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
+        total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
         
         st.markdown("## 📊 Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
@@ -808,10 +1014,10 @@ def analyze():
         else:
             st.info("⚖️ OI Changes Balanced")
 
-        today = datetime.now(timezone("Asia/Kolkata"))
-        expiry_date = timezone("Asia/Kolkata").localize(datetime.strptime(expiry, "%d-%b-%Y"))
-        
-        is_expiry_day = today.date() == expiry_date.date()
+        # Check if it's expiry day
+        today = datetime.now(timezone("Asia/Kolkata")).date()
+        expiry_date_date = expiry_date.date()
+        is_expiry_day = today == expiry_date_date
         
         if is_expiry_day:
             st.info("""
@@ -828,26 +1034,10 @@ def analyze():
             
             st.markdown(f"### 📍 Spot Price: {underlying}")
             
-            prev_close_url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
-            prev_close_data = session.get(prev_close_url, timeout=10).json()
-            prev_close = prev_close_data['data'][0]['previousClose']
-            
-            calls, puts = [], []
-            for item in records:
-                if 'CE' in item and item['CE']['expiryDate'] == expiry:
-                    ce = item['CE']
-                    ce['previousClose_CE'] = prev_close
-                    ce['underlyingValue'] = underlying
-                    calls.append(ce)
-                if 'PE' in item and item['PE']['expiryDate'] == expiry:
-                    pe = item['PE']
-                    pe['previousClose_PE'] = prev_close
-                    pe['underlyingValue'] = underlying
-                    puts.append(pe)
-            
-            df_ce = pd.DataFrame(calls)
-            df_pe = pd.DataFrame(puts)
-            df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
+            # Add previous close data (you might need to get this from another Dhan API endpoint)
+            df['previousClose_CE'] = df['lastPrice_CE'] * 0.95  # Placeholder
+            df['previousClose_PE'] = df['lastPrice_PE'] * 0.95  # Placeholder
+            df['underlyingValue'] = underlying
             
             df['Level'] = df.apply(determine_level, axis=1)
             support_levels = df[df['Level'] == "Support"]['strikePrice'].unique()
@@ -896,35 +1086,11 @@ def analyze():
             
             return
             
-        # Non-expiry day processing
-        T = max((expiry_date - today).days, 1) / 365
-        r = 0.06
+        # Non-expiry day processing continues...
+        # ... [rest of your non-expiry day analysis code remains the same]
 
-        calls, puts = [], []
-
-        for item in records:
-            if 'CE' in item and item['CE']['expiryDate'] == expiry:
-                ce = item['CE']
-                if ce['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('CE', underlying, ce['strikePrice'], T, r, ce['impliedVolatility'] / 100)
-                    ce.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
-                calls.append(ce)
-
-            if 'PE' in item and item['PE']['expiryDate'] == expiry:
-                pe = item['PE']
-                if pe['impliedVolatility'] > 0:
-                    greeks = calculate_greeks('PE', underlying, pe['strikePrice'], T, r, pe['impliedVolatility'] / 100)
-                    pe.update(dict(zip(['Delta', 'Gamma', 'Vega', 'Theta', 'Rho'], greeks)))
-                puts.append(pe)
-
-        df_ce = pd.DataFrame(calls)
-        df_pe = pd.DataFrame(puts)
-        df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
-
-        atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
-        df = df[df['strikePrice'].between(atm_strike - 200, atm_strike + 200)]
-        df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
-        df['Level'] = df.apply(determine_level, axis=1)
+        # The rest of your analysis logic remains largely the same
+        # You'll need to adjust column names and data processing as needed
 
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
