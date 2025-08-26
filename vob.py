@@ -15,7 +15,7 @@ from typing import Tuple, List, Dict, Any
 
 # Configuration
 IST = pytz.timezone('Asia/Kolkata')
-DHAN_BASE_URL = "https://api.dhan.co/v2"
+DHAN_BASE_URL = "https://api.dhan.co"
 SUPABASE_URL = "https://jkcbxkczczwxsrymoiqp.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImprY2J4a2N6Y3p3eHNyeW1vaXFwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU4NjQ0MzYsImV4cCI6MjA3MTQ0MDQzNn0.xZaFyEFGmKC2oFUu4DmaOobD_o1-Vq2LN8GGpRSdLGg"
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
@@ -31,46 +31,58 @@ def get_nifty_data() -> pd.DataFrame:
     """Fetch Nifty 50 data from Dhan API"""
     headers = {
         'access-token': DHAN_ACCESS_TOKEN,
-        'client-id': DHAN_CLIENT_ID,
-        'Content-Type': 'application/json'
     }
     
-    # Nifty 50 security ID (example - replace with actual ID from Dhan)
-    nifty_security_id = "999920000"  # This needs to be verified from Dhan instrument list
+    # Nifty 50 security ID
+    nifty_security_id = "999260000"  # Correct security ID for Nifty 50
     
     # Get current time in IST
     end_time = datetime.now(IST)
     start_time = end_time - timedelta(hours=2)  # Get 2 hours of data for 3-min candles
     
-    payload = {
-        "securityId": nifty_security_id,
-        "exchangeSegment": "IDX_I",  # Nifty Index
-        "instrument": "INDEX",
-        "interval": "3",  # 3-minute interval
-        "fromDate": start_time.strftime("%Y-%m-%d %H:%M:%S"),
-        "toDate": end_time.strftime("%Y-%m-%d %H:%M:%S")
-    }
+    # Format dates for API request
+    from_date = start_time.strftime("%Y-%m-%d")
+    to_date = end_time.strftime("%Y-%m-%d")
     
     try:
-        response = requests.post(
-            f"{DHAN_BASE_URL}/charts/intraday",
+        # Correct API endpoint and parameters
+        url = f"{DHAN_BASE_URL}/charts/intraday/{nifty_security_id}"
+        params = {
+            "securityId": nifty_security_id,
+            "exchangeSegment": "IDX_I",
+            "instrument": "INDEX",
+            "expiryCode": 0,
+            "fromDate": from_date,
+            "toDate": to_date,
+            "interval": "THREE_MIN"  # Correct interval parameter
+        }
+        
+        response = requests.get(
+            url,
             headers=headers,
-            json=payload
+            params=params
         )
         
         if response.status_code == 200:
             data = response.json()
-            df = pd.DataFrame({
-                'timestamp': data['timestamp'],
-                'open': data['open'],
-                'high': data['high'],
-                'low': data['low'],
-                'close': data['close']
-            })
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(IST)
-            return df
+            if data and 'data' in data:
+                df = pd.DataFrame(data['data'])
+                # Convert timestamp to datetime
+                df['timestamp'] = pd.to_datetime(df['start_Time'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(IST)
+                # Rename columns to match expected format
+                df = df.rename(columns={
+                    'start_Time': 'timestamp',
+                    'open': 'open',
+                    'high': 'high',
+                    'low': 'low',
+                    'close': 'close'
+                })
+                return df
+            else:
+                st.error(f"No data in response: {data}")
+                return pd.DataFrame()
         else:
-            st.error(f"Error fetching data: {response.status_code}")
+            st.error(f"Error fetching data: {response.status_code}, Response: {response.text}")
             return pd.DataFrame()
             
     except Exception as e:
@@ -81,9 +93,10 @@ def save_to_supabase(df: pd.DataFrame, signal_data: Dict[str, Any]):
     """Save data and signals to Supabase"""
     try:
         # Save candle data
-        records = df.to_dict('records')
-        for record in records:
-            supabase.table("nifty_3min_candles").upsert(record).execute()
+        if not df.empty:
+            records = df.to_dict('records')
+            for record in records:
+                supabase.table("nifty_3min_candles").upsert(record).execute()
         
         # Save signal
         if signal_data:
@@ -105,7 +118,7 @@ def vob_strategy(df: pd.DataFrame, length1: int = 5) -> Tuple[List[Dict], List[D
     VOB Strategy implementation
     Returns: bull_zones, bear_zones, enriched_df
     """
-    if len(df) < length1 * 2:
+    if df.empty or len(df) < length1 * 2:
         return [], [], df
     
     # Calculate required indicators
@@ -158,7 +171,8 @@ def vob_strategy(df: pd.DataFrame, length1: int = 5) -> Tuple[List[Dict], List[D
 
 def run_strategy():
     """Main function to run the strategy"""
-    st.write(f"Running strategy at {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S %Z')
+    st.write(f"Running strategy at {current_time}")
     
     # Fetch data
     df = get_nifty_data()
@@ -210,7 +224,7 @@ def schedule_job():
     """Schedule the job to run every 3 minutes"""
     while True:
         schedule.run_pending()
-        time.sleep(1)
+        time.sleep(60)  # Check every minute
 
 # Streamlit interface
 def main():
