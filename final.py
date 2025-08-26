@@ -27,7 +27,7 @@ def is_market_hours():
             
         # Check if time is between 9:00 AM and 3:40 PM
         market_start = dt_time(9, 0)
-        market_end = dt_time(15, 40)
+        market_end = dt_time(23, 40)
         current_time = now.time()
         
         return market_start <= current_time <= market_end
