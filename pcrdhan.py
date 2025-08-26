@@ -1172,7 +1172,7 @@ def analyze():
         )
 
         df_summary['PCR'] = np.where(
-            (df_summary['openInterest_CE'] == 0,
+            df_summary['openInterest_CE'] == 0,
             0,
             df_summary['PCR']
         )
