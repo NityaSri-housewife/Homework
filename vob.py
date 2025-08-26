@@ -1,47 +1,61 @@
 import streamlit as st
 import requests
-import time
 from datetime import datetime
-from supabase import create_client, Client
+import time
+from supabase import create_client
 import telegram
 
 # ---------------------------
-# Load secrets
+# CONFIGURATION FROM SECRETS
 # ---------------------------
 DHAN_API_TOKEN = st.secrets["dhan"]["access_token"]
 SECURITY_ID = st.secrets["dhan"]["security_id"]
-EXCHANGE_SEGMENT = "IDX_I"  # NIFTY index segment
-INTERVAL = "3"  # 3-min timeframe
+EXCHANGE_SEGMENT = "IDX_I"   # Index segment
+INTERVAL = "3"               # 3-min timeframe
 
 SUPABASE_URL = st.secrets["supabase"]["url"]
 SUPABASE_KEY = st.secrets["supabase"]["key"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 TELEGRAM_TOKEN = st.secrets["telegram"]["token"]
 TELEGRAM_CHAT_ID = st.secrets["telegram"]["chat_id"]
 
 # ---------------------------
-# Telegram function
+# TELEGRAM FUNCTION
 # ---------------------------
 def send_telegram(message):
-    try:
-        bot = telegram.Bot(token=TELEGRAM_TOKEN)
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-    except Exception as e:
-        st.error(f"Error sending Telegram message: {e}")
+    bot = telegram.Bot(token=TELEGRAM_TOKEN)
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
 # ---------------------------
-# Fetch intraday data from Dhan
+# SUPABASE CLIENT
 # ---------------------------
-def fetch_intraday_data(from_date, to_date):
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def store_alert(timestamp, signal):
+    try:
+        supabase.table("vob_history").insert({
+            "timestamp": timestamp,
+            "signal": signal
+        }).execute()
+    except Exception as e:
+        st.error(f"Error storing in Supabase: {e}")
+
+# ---------------------------
+# FETCH INTRADAY DATA
+# ---------------------------
+def fetch_intraday_data():
     url = "https://api.dhan.co/v2/charts/intraday"
     headers = {
         "accept": "application/json",
         "Content-Type": "application/json",
         "access-token": DHAN_API_TOKEN
     }
+    now = datetime.now()
+    from_date = now.strftime("%Y-%m-%d %H:%M:00")
+    to_date = now.strftime("%Y-%m-%d %H:%M:59")
+
     data = {
-        "securityId": int(SECURITY_ID),
+        "securityId": SECURITY_ID,
         "exchangeSegment": EXCHANGE_SEGMENT,
         "instrument": "INDEX",
         "interval": INTERVAL,
@@ -50,87 +64,53 @@ def fetch_intraday_data(from_date, to_date):
         "toDate": to_date
     }
     response = requests.post(url, json=data, headers=headers)
-    response.raise_for_status()
     return response.json()
 
 # ---------------------------
-# Detect VOB
+# DETECT BULL/BEAR VOB
 # ---------------------------
 def detect_vob(open_prices, close_prices, volumes):
-    last_index = -1
+    last_index = -1  # latest candle
     candle_open = open_prices[last_index]
     candle_close = close_prices[last_index]
     candle_volume = volumes[last_index]
 
-    avg_volume = sum(volumes[-10:]) / max(1, len(volumes[-10:]))
+    avg_volume = sum(volumes[-10:]) / min(len(volumes), 10)
     threshold_volume = avg_volume * 1.5
 
     if candle_volume > threshold_volume:
         if candle_close > candle_open:
-            return "Bullish VOB 📈"
+            return "Bullish VOB formed 📈"
         elif candle_close < candle_open:
-            return "Bearish VOB 📉"
+            return "Bearish VOB formed 📉"
     return None
 
 # ---------------------------
-# Store in Supabase
+# STREAMLIT APP
 # ---------------------------
-def store_vob_history(signal, open_price, high, low, close, volume):
-    try:
-        supabase.table("vob_history").insert({
-            "signal": signal,
-            "open": open_price,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": volume
-        }).execute()
-    except Exception as e:
-        st.error(f"Error storing in Supabase: {e}")
+st.title("Dhan VOB Notifier (3-min chart, auto-refresh 2-min)")
 
-# ---------------------------
-# Streamlit UI
-# ---------------------------
-st.title("NIFTY VOB Notifier (3-min, auto-refresh 2-min)")
-status = st.empty()
+status_placeholder = st.empty()
 
-# ---------------------------
-# Main loop
-# ---------------------------
 while True:
-    now = datetime.now()
-    from_date = (now.replace(second=0, microsecond=0)).strftime("%Y-%m-%d %H:%M:00")
-    to_date = (now.replace(second=59, microsecond=0)).strftime("%Y-%m-%d %H:%M:59")
-
     try:
-        data = fetch_intraday_data(from_date, to_date)
+        data = fetch_intraday_data()
 
-        open_prices = data.get("open", [])
-        high_prices = data.get("high", [])
-        low_prices = data.get("low", [])
-        close_prices = data.get("close", [])
-        volumes = data.get("volume", [])
+        open_prices = data["open"]
+        close_prices = data["close"]
+        volumes = data["volume"]
 
-        if open_prices and close_prices and volumes:
-            signal = detect_vob(open_prices, close_prices, volumes)
-            if signal:
-                send_telegram(signal)
-                store_vob_history(
-                    signal,
-                    open_prices[-1],
-                    high_prices[-1],
-                    low_prices[-1],
-                    close_prices[-1],
-                    volumes[-1]
-                )
-                status.success(f"{signal} at {datetime.now().strftime('%H:%M:%S')}")
-            else:
-                status.info(f"No VOB signal at {datetime.now().strftime('%H:%M:%S')}")
+        signal = detect_vob(open_prices, close_prices, volumes)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if signal:
+            send_telegram(signal)
+            store_alert(timestamp, signal)
+            status_placeholder.success(f"{timestamp} - {signal}")
         else:
-            status.warning("No intraday data returned.")
+            status_placeholder.info(f"{timestamp} - Monitoring... 🔄")
 
     except Exception as e:
-        status.error(f"Error fetching Dhan data: {e}")
+        status_placeholder.error(f"Error fetching or processing data: {e}")
 
-    # Wait 2 minutes
-    time.sleep(120)
+    time.sleep(120)  # auto-refresh every 2 minutes
