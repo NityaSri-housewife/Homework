@@ -885,7 +885,7 @@ def analyze():
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
-        market_start = datetime.strptime("08:00", "%H:%M").time()
+        market_start = datetime.strptime("00:00", "%H:%M").time()
         market_end = datetime.strptime("23:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
@@ -1168,12 +1168,11 @@ def analyze():
         )
 
         df_summary['PCR'] = (
-            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
-            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
+            (df_summary['openInterest_PE'] / df_summary['openInterest_CE']
         )
 
         df_summary['PCR'] = np.where(
-            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
+            (df_summary['openInterest_CE'] == 0,
             0,
             df_summary['PCR']
         )
