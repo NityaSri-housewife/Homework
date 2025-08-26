@@ -41,8 +41,8 @@ def send_telegram(message):
         st.error(f"Error sending Telegram message: {e}")
 
 def get_dhan_token():
-    # Updated Dhan API endpoint
-    url = "https://api.dhan.co/oauth/token"
+    # CORRECTED Dhan API endpoint (added /v2/)
+    url = "https://api.dhan.co/v2/oauth/token"
     payload = {
         "client_id": DHAN_CLIENT_ID, 
         "client_secret": DHAN_CLIENT_SECRET,
@@ -60,7 +60,8 @@ def get_dhan_token():
         return None
 
 def fetch_intraday_data(token):
-    url = "https://api.dhan.co/charts/intraday"
+    # CORRECTED Dhan API endpoint (added /v2/)
+    url = "https://api.dhan.co/v2/charts/intraday"
     headers = {
         "accept": "application/json", 
         "Authorization": f"Bearer {token}",
