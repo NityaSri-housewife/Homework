@@ -1168,14 +1168,14 @@ def analyze():
         )
 
         df_summary['PCR'] = (
-            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
-            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
-        )
+    df_summary['openInterest_PE'] / df_summary['openInterest_CE']
+)
 
-        df_summary['PCR'] = np.where(
-            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
-            0,
-            df_summary['PCR']
+df_summary['PCR'] = np.where(
+    df_summary['openInterest_CE'] == 0,
+    0,
+    df_summary['PCR']
+)
         )
 
         df_summary['PCR'] = df_summary['PCR'].round(2)
