@@ -92,6 +92,23 @@ def delta_volume_bias(price, volume, chg_oi):
     else:
         return "Neutral"
 
+def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_qty):
+    """
+    Calculate bid/ask pressure based on the formula:
+    (CallBid qty - CallAsk qty) + (PutAsk qty - PutBid qty)
+    """
+    pressure = (call_bid_qty - call_ask_qty) + (put_ask_qty - put_bid_qty)
+    
+    # Determine bias based on pressure value
+    if pressure > 500:
+        bias = "Bullish"
+    elif pressure < -500:
+        bias = "Bearish"
+    else:
+        bias = "Neutral"
+    
+    return pressure, bias
+
 weights = {
     "ChgOI_Bias": 2,
     "Volume_Bias": 1,
@@ -100,6 +117,7 @@ weights = {
     "BidQty_Bias": 1,
     "IV_Bias": 1,
     "DVP_Bias": 1,
+    "PressureBias": 1,
 }
 
 def determine_level(row):
@@ -372,6 +390,22 @@ def display_call_log_book():
             mime="text/csv"
         )
 
+def color_pressure(val):
+    if val > 500:
+        return 'background-color: #90EE90; color: black'  # Light green for bullish
+    elif val < -500:
+        return 'background-color: #FFB6C1; color: black'  # Light red for bearish
+    else:
+        return 'background-color: #FFFFE0; color: black'   # Light yellow for neutral
+
+def color_pcr(val):
+    if val > st.session_state.pcr_threshold_bull:
+        return 'background-color: #90EE90; color: black'
+    elif val < st.session_state.pcr_threshold_bear:
+        return 'background-color: #FFB6C1; color: black'
+    else:
+        return 'background-color: #FFFFE0; color: black'
+
 def analyze():
     if 'trade_log' not in st.session_state:
         st.session_state.trade_log = []
@@ -380,7 +414,7 @@ def analyze():
         current_day = now.weekday()
         current_time = now.time()
         market_start = datetime.strptime("09:00", "%H:%M").time()
-        market_end = datetime.strptime("20:40", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
@@ -541,6 +575,12 @@ def analyze():
             if abs(row['strikePrice'] - atm_strike) > 100:
                 continue
 
+            # Add bid/ask pressure calculation
+            bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
+                row['bidQty_CE'], row['askQty_CE'], 
+                row['bidQty_PE'], row['askQty_PE']
+            )
+            
             score = 0
             row_data = {
                 "Strike": row['strikePrice'],
@@ -556,13 +596,19 @@ def analyze():
                     row['lastPrice_CE'] - row['lastPrice_PE'],
                     row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
                     row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
-                )
+                ),
+                # Add bid/ask pressure to the row data
+                "BidAskPressure": bid_ask_pressure,
+                "PressureBias": pressure_bias
             }
 
             for k in row_data:
                 if "_Bias" in k:
                     bias = row_data[k]
                     score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
+                # Add pressure bias to scoring
+                elif k == "PressureBias":
+                    score += weights.get("PressureBias", 1) if bias == "Bullish" else -weights.get("PressureBias", 1)
 
             row_data["BiasScore"] = score
             row_data["Verdict"] = final_verdict(score)
@@ -603,15 +649,7 @@ def analyze():
             )
         )
 
-        def color_pcr(val):
-            if val > st.session_state.pcr_threshold_bull:
-                return 'background-color: #90EE90; color: black'
-            elif val < st.session_state.pcr_threshold_bear:
-                return 'background-color: #FFB6C1; color: black'
-            else:
-                return 'background-color: #FFFFE0; color: black'
-
-        styled_df = df_summary.style.applymap(color_pcr, subset=['PCR'])
+        styled_df = df_summary.style.applymap(color_pcr, subset=['PCR']).applymap(color_pressure, subset=['BidAskPressure'])
         df_summary = df_summary.drop(columns=['strikePrice'])
         
         # Record PCR history
