@@ -1159,34 +1159,35 @@ def analyze():
         
         # === PCR CALCULATION AND MERGE ===
         df_summary = pd.merge(
-    df_summary,
-    df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
-        'changeinOpenInterest_CE', 'changeinOpenInterest_PE']],
-    left_on='Strike',
-    right_on='strikePrice',
-    how='left'
-)
+            df_summary,
+            df[['strikePrice', 'openInterest_CE', 'openInterest_PE', 
+                'changeinOpenInterest_CE', 'changeinOpenInterest_PE']],
+            left_on='Strike',
+            right_on='strikePrice',
+            how='left'
+        )
 
-df_summary['PCR'] = (
-    df_summary['openInterest_PE'] / df_summary['openInterest_CE']
-)
+        df_summary['PCR'] = (
+            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
+            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
+        )
 
-df_summary['PCR'] = np.where(
-    df_summary['openInterest_CE'] == 0,
-    0,
-    df_summary['PCR']
-)
+        df_summary['PCR'] = np.where(
+            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
+            0,
+            df_summary['PCR']
+        )
 
-df_summary['PCR'] = df_summary['PCR'].round(2)
-df_summary['PCR_Signal'] = np.where(
-    df_summary['PCR'] > st.session_state.pcr_threshold_bull,
-    "Bullish",
-    np.where(
-        df_summary['PCR'] < st.session_state.pcr_threshold_bear,
-        "Bearish",
-        "Neutral"
-    )
-)
+        df_summary['PCR'] = df_summary['PCR'].round(2)
+        df_summary['PCR_Signal'] = np.where(
+            df_summary['PCR'] > st.session_state.pcr_threshold_bull,
+            "Bullish",
+            np.where(
+                df_summary['PCR'] < st.session_state.pcr_threshold_bear,
+                "Bearish",
+                "Neutral"
+            )
+        )
 
         # Store option chain data in Supabase
         store_option_chain_data(df_summary)
