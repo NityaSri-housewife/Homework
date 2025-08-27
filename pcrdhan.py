@@ -1167,8 +1167,9 @@ def analyze():
             how='left'
         )
 
+        # FIXED: Corrected the PCR calculation syntax
         df_summary['PCR'] = (
-            (df_summary['openInterest_PE'] / df_summary['openInterest_CE']
+            df_summary['openInterest_PE'] / df_summary['openInterest_CE']
         )
 
         df_summary['PCR'] = np.where(
