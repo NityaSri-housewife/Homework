@@ -43,6 +43,21 @@ def determine_pcr_level(pcr_value):
     elif pcr_value >= 0.3: return "Strong Resistance", "Strike price to -15"
     else: return "Strong Resistance", "Strike price to -20"
 
+def calculate_zone_width(strike, zone_width_str):
+    if zone_width_str == "0": return f"{strike} to {strike}"
+    
+    try:
+        operation, value = zone_width_str.split(" to ")
+        value = int(value.replace("+", "").replace("-", ""))
+        if "Strike price to +" in zone_width_str:
+            return f"{strike} to {strike + value}"
+        elif "Strike price to -" in zone_width_str:
+            return f"{strike - value} to {strike}"
+    except:
+        return f"{strike} to {strike}"
+    
+    return f"{strike} to {strike}"
+
 def dhan_post(endpoint, payload):
     url = f"https://api.dhan.co/v2/{endpoint}"
     headers = {"Content-Type": "application/json", "access-token": DHAN_ACCESS_TOKEN, "client-id": DHAN_CLIENT_ID}
@@ -130,6 +145,7 @@ def analyze_bias(df, underlying, atm_strike, band):
         pe_pressure = row.get('bidQty_PE', 0) - row.get('askQty_PE', 0)
         pcr_oi = row.get('PCR_OI', 0)
         pcr_level, zone_width = determine_pcr_level(pcr_oi)
+        zone_calculation = calculate_zone_width(row['strikePrice'], zone_width)
         
         results.append({
             "Strike": row['strikePrice'],
@@ -147,7 +163,7 @@ def analyze_bias(df, underlying, atm_strike, band):
                 row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)),
             "PCR": pcr_oi,
             "Support_Resistance": pcr_level,
-            "Zone_Width": zone_width,
+            "Zone_Width": zone_calculation,
             "PressureBias": "Bullish" if pe_pressure > ce_pressure else "Bearish"
         })
     
