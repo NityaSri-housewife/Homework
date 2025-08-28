@@ -465,63 +465,6 @@ def get_support_resistance_zones(df, spot):
 
     return support_zone, resistance_zone
 
-def expiry_bias_score(row):
-    score = 0
-
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] > row['previousClose_CE']:
-        score += 1
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] > row['previousClose_PE']:
-        score -= 1
-    if row['changeinOpenInterest_CE'] > 0 and row['lastPrice_CE'] < row['previousClose_CE']:
-        score -= 1
-    if row['changeinOpenInterest_PE'] > 0 and row['lastPrice_PE'] < row['previousClose_PE']:
-        score += 1
-
-    if 'bidQty_CE' in row and 'bidQty_PE' in row:
-        if row['bidQty_CE'] > row['bidQty_PE'] * 1.5:
-            score += 1
-        if row['bidQty_PE'] > row['bidQty_CE'] * 1.5:
-            score -= 1
-
-    if row['totalTradedVolume_CE'] > 2 * row['openInterest_CE']:
-        score -= 0.5
-    if row['totalTradedVolume_PE'] > 2 * row['openInterest_PE']:
-        score += 0.5
-
-    if 'underlyingValue' in row:
-        if abs(row['lastPrice_CE'] - row['underlyingValue']) < abs(row['lastPrice_PE'] - row['underlyingValue']):
-            score += 0.5
-        else:
-            score -= 0.5
-
-    return score
-
-def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1.5):
-    entries = []
-    for _, row in df.iterrows():
-        strike = row['strikePrice']
-        score = expiry_bias_score(row)
-
-        if score >= score_threshold and strike in support_levels:
-            entries.append({
-                'type': 'BUY CALL',
-                'strike': strike,
-                'score': score,
-                'ltp': row['lastPrice_CE'],
-                'reason': 'Bullish score + support zone'
-            })
-
-        if score <= -score_threshold and strike in resistance_levels:
-            entries.append({
-                'type': 'BUY PUT',
-                'strike': strike,
-                'score': score,
-                'ltp': row['lastPrice_PE'],
-                'reason': 'Bearish score + resistance zone'
-            })
-
-    return entries
-
 def display_enhanced_trade_log():
     # Get trade log from Supabase
     trade_data = get_trade_log()
@@ -726,7 +669,6 @@ def display_call_log_book():
     st.markdown("### 📚 Call Log Book")
     if not st.session_state.call_log_book:
         st.info("No calls have been made yet.")
-        return
     df_log = pd.DataFrame(st.session_state.call_log_book)
     st.dataframe(df_log, use_container_width=True)
     if st.button("Download Call Log Book as CSV"):
@@ -1014,84 +956,7 @@ def analyze():
         else:
             st.info("⚖️ OI Changes Balanced")
 
-        # Check if it's expiry day
-        today = datetime.now(timezone("Asia/Kolkata")).date()
-        expiry_date_date = expiry_date.date()
-        is_expiry_day = today == expiry_date_date
-        
-        if is_expiry_day:
-            st.info("""
-📅 **EXPIRY DAY DETECTED**
-- Using specialized expiry day analysis
-- IV Collapse, OI Unwind, Volume Spike expected
-- Modified signals will be generated
-""")
-            send_telegram_message("⚠️ Expiry Day Detected. Using special expiry analysis.")
-            
-            current_time_str = now.strftime("%H:%M:%S")
-            new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-            st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
-            
-            st.markdown(f"### 📍 Spot Price: {underlying}")
-            
-            # Add previous close data (you might need to get this from another Dhan API endpoint)
-            df['previousClose_CE'] = df['lastPrice_CE'] * 0.95  # Placeholder
-            df['previousClose_PE'] = df['lastPrice_PE'] * 0.95  # Placeholder
-            df['underlyingValue'] = underlying
-            
-            df['Level'] = df.apply(determine_level, axis=1)
-            support_levels = df[df['Level'] == "Support"]['strikePrice'].unique()
-            resistance_levels = df[df['Level'] == "Resistance"]['strikePrice'].unique()
-            
-            expiry_signals = expiry_entry_signal(df, support_levels, resistance_levels)
-            
-            st.markdown("### 🎯 Expiry Day Signals")
-            if expiry_signals:
-                for signal in expiry_signals:
-                    st.success(f"""
-                    {signal['type']} at {signal['strike']} 
-                    (Score: {signal['score']:.1f}, LTP: ₹{signal['ltp']})
-                    Reason: {signal['reason']}
-                    """)
-                    
-                    trade_data = {
-                        "Time": now.strftime("%H:%M:%S"),
-                        "Strike": signal['strike'],
-                        "Type": 'CE' if 'CALL' in signal['type'] else 'PE',
-                        "LTP": signal['ltp'],
-                        "Target": round(signal['ltp'] * 1.2, 2),
-                        "SL": round(signal['ltp'] * 0.8, 2)
-                    }
-                    
-                    # Store trade in Supabase
-                    store_trade_log(trade_data)
-                    
-                    send_telegram_message(
-                        f"📅 EXPIRY DAY SIGNAL\n"
-                        f"Type: {signal['type']}\n"
-                        f"Strike: {signal['strike']}\n"
-                        f"Score: {signal['score']:.1f}\n"
-                        f"LTP: ₹{signal['ltp']}\n"
-                        f"Reason: {signal['reason']}\n"
-                        f"Spot: {underlying}"
-                    )
-            else:
-                st.warning("No strong expiry day signals detected")
-            
-            with st.expander("📊 Expiry Day Option Chain"):
-                df['ExpiryBiasScore'] = df.apply(expiry_bias_score, axis=1)
-                st.dataframe(df[['strikePrice', 'ExpiryBiasScore', 'lastPrice_CE', 'lastPrice_PE', 
-                               'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
-                               'bidQty_CE', 'bidQty_PE']])
-            
-            return
-            
-        # Non-expiry day processing continues...
-        # ... [rest of your non-expiry day analysis code remains the same]
-
-        # The rest of your analysis logic remains largely the same
-        # You'll need to adjust column names and data processing as needed
-
+        # The rest of your analysis logic remains the same
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
             if abs(row['strikePrice'] - atm_strike) > 100:
