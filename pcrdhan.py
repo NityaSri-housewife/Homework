@@ -372,17 +372,14 @@ def send_telegram_message(message):
         st.error(f"❌ Telegram error: {e}")
 
 def calculate_greeks(option_type, S, K, T, r, sigma):
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
-        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
-        vega = S * norm.pdf(d1) * math.sqrt(T) / 100
-        theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
-        rho = (K * T * math.exp(-r * T) * norm.cdf(d2)) / 100 if option_type == 'CE' else (-K * T * math.exp(-r * T) * norm.cdf(-d2)) / 100
-        return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4), round(rho, 4)
-    except:
-        return 0, 0, 0, 0, 0
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    delta = norm.cdf(d1) if option_type == 'CE' else -norm.cdf(-d1)
+    gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+    vega = S * norm.pdf(d1) * math.sqrt(T) / 100
+    theta = (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm.cdf(d2)) / 365 if option_type == 'CE' else (- (S * norm.pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm.cdf(-d2)) / 365
+    rho = (K * T * math.exp(-r * T) * norm.cdf(d2)) / 100 if option_type == 'CE' else (-K * T * math.exp(-r * T) * norm.cdf(-d2)) / 100
+    return round(delta, 4), round(gamma, 4), round(vega, 4), round(theta, 4), round(rho, 4)
 
 def final_verdict(score):
     if score >= 4:
@@ -437,10 +434,10 @@ weights = {
 }
 
 def determine_level(row):
-    ce_oi = row.get('openInterest_CE', 0)
-    pe_oi = row.get('openInterest_PE', 0)
-    ce_chg = row.get('changeinOpenInterest_CE', 0)
-    pe_chg = row.get('changeinOpenInterest_PE', 0)
+    ce_oi = row['openInterest_CE']
+    pe_oi = row['openInterest_PE']
+    ce_chg = row['changeinOpenInterest_CE']
+    pe_chg = row['changeinOpenInterest_PE']
 
     if pe_oi > 1.12 * ce_oi:
         return "Support"
@@ -467,63 +464,6 @@ def get_support_resistance_zones(df, spot):
     resistance_zone = (min(nearest_resistances), max(nearest_resistances)) if len(nearest_resistances) >= 2 else (nearest_resistances[0], nearest_resistances[0]) if nearest_resistances else (None, None)
 
     return support_zone, resistance_zone
-
-def expiry_bias_score(row):
-    score = 0
-
-    if row.get('changeinOpenInterest_CE', 0) > 0 and row.get('lastPrice_CE', 0) > row.get('previousClose_CE', 0):
-        score += 1
-    if row.get('changeinOpenInterest_PE', 0) > 0 and row.get('lastPrice_PE', 0) > row.get('previousClose_PE', 0):
-        score -= 1
-    if row.get('changeinOpenInterest_CE', 0) > 0 and row.get('lastPrice_CE', 0) < row.get('previousClose_CE', 0):
-        score -= 1
-    if row.get('changeinOpenInterest_PE', 0) > 0 and row.get('lastPrice_PE', 0) < row.get('previousClose_PE', 0):
-        score += 1
-
-    if 'bidQty_CE' in row and 'bidQty_PE' in row:
-        if row.get('bidQty_CE', 0) > row.get('bidQty_PE', 0) * 1.5:
-            score += 1
-        if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) * 1.5:
-            score -= 1
-
-    if row.get('totalTradedVolume_CE', 0) > 2 * row.get('openInterest_CE', 1):
-        score -= 0.5
-    if row.get('totalTradedVolume_PE', 0) > 2 * row.get('openInterest_PE', 1):
-        score += 0.5
-
-    if 'underlyingValue' in row:
-        if abs(row.get('lastPrice_CE', 0) - row.get('underlyingValue', 0)) < abs(row.get('lastPrice_PE', 0) - row.get('underlyingValue', 0)):
-            score += 0.5
-        else:
-            score -= 0.5
-
-    return score
-
-def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1.5):
-    entries = []
-    for _, row in df.iterrows():
-        strike = row.get('strikePrice', 0)
-        score = expiry_bias_score(row)
-
-        if score >= score_threshold and strike in support_levels:
-            entries.append({
-                'type': 'BUY CALL',
-                'strike': strike,
-                'score': score,
-                'ltp': row.get('lastPrice_CE', 0),
-                'reason': 'Bullish score + support zone'
-            })
-
-        if score <= -score_threshold and strike in resistance_levels:
-            entries.append({
-                'type': 'BUY PUT',
-                'strike': strike,
-                'score': score,
-                'ltp': row.get('lastPrice_PE', 0),
-                'reason': 'Bearish score + resistance zone'
-            })
-
-    return entries
 
 def display_enhanced_trade_log():
     # Get trade log from Supabase
@@ -729,7 +669,6 @@ def display_call_log_book():
     st.markdown("### 📚 Call Log Book")
     if not st.session_state.call_log_book:
         st.info("No calls have been made yet.")
-        return
     df_log = pd.DataFrame(st.session_state.call_log_book)
     st.dataframe(df_log, use_container_width=True)
     if st.button("Download Call Log Book as CSV"):
@@ -885,8 +824,8 @@ def analyze():
         now = datetime.now(timezone("Asia/Kolkata"))
         current_day = now.weekday()
         current_time = now.time()
-        market_start = datetime.strptime("00:00", "%H:%M").time()
-        market_end = datetime.strptime("23:40", "%H:%M").time()
+        market_start = datetime.strptime("08:00", "%H:%M").time()
+        market_end = datetime.strptime("15:40", "%H:%M").time()
 
         if current_day >= 5 or not (market_start <= current_time <= market_end):
             st.warning("⏳ Market Closed (Mon-Fri 9:00-15:40)")
@@ -964,12 +903,8 @@ def analyze():
             if f"{old_col}_PE" in df.columns:
                 df.rename(columns={f"{old_col}_PE": f"{new_col}_PE"}, inplace=True)
         
-        # Calculate change in open interest (CORRECTED)
-        df['changeinOpenInterest_CE'] = df['openInterest_CE'] - df['previousOpenInterest_CE']
-        df['changeinOpenInterest_PE'] = df['openInterest_PE'] - df['previousOpenInterest_PE']
-        
         # Add missing columns with default values
-        for col in ['impliedVolatility_CE', 'impliedVolatility_PE']:
+        for col in ['changeinOpenInterest_CE', 'changeinOpenInterest_PE', 'impliedVolatility_CE', 'impliedVolatility_PE']:
             if col not in df.columns:
                 df[col] = 0
         
@@ -978,33 +913,19 @@ def analyze():
         T = max((expiry_date - now).days, 1) / 365
         r = 0.06
 
-        # Calculate Greeks for calls and puts - WITH ERROR HANDLING
+        # Calculate Greeks for calls and puts
         for idx, row in df.iterrows():
             strike = row['strikePrice']
             
-            # Calculate Greeks for CE - WITH DEFAULT VALUES
-            try:
-                if 'impliedVolatility_CE' in row and row['impliedVolatility_CE'] > 0:
-                    greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
-                else:
-                    # Use default volatility if not available
-                    greeks = calculate_greeks('CE', underlying, strike, T, r, 0.15)  # 15% default IV
-            except:
-                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
+            # Calculate Greeks for CE
+            if row['impliedVolatility_CE'] > 0:
+                greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
+                df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
             
-            df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
-            
-            # Calculate Greeks for PE - WITH DEFAULT VALUES
-            try:
-                if 'impliedVolatility_PE' in row and row['impliedVolatility_PE'] > 0:
-                    greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
-                else:
-                    # Use default volatility if not available
-                    greeks = calculate_greeks('PE', underlying, strike, T, r, 0.15)  # 15% default IV
-            except:
-                greeks = (0, 0, 0, 0, 0)  # Default values if calculation fails
-            
-            df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
+            # Calculate Greeks for PE
+            if row['impliedVolatility_PE'] > 0:
+                greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
+                df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
 
         # Continue with your existing analysis logic...
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
@@ -1012,7 +933,7 @@ def analyze():
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
 
-        # Open Interest Change Comparison - FIXED OI CALCULATION
+        # Open Interest Change Comparison
         total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
         total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
         
@@ -1035,79 +956,7 @@ def analyze():
         else:
             st.info("⚖️ OI Changes Balanced")
 
-        # Check if it's expiry day
-        today = datetime.now(timezone("Asia/Kolkata")).date()
-        expiry_date_date = expiry_date.date()
-        is_expiry_day = today == expiry_date_date
-        
-        if is_expiry_day:
-            st.info("""
-📅 **EXPIRY DAY DETECTED**
-- Using specialized expiry day analysis
-- IV Collapse, OI Unwind, Volume Spike expected
-- Modified signals will be generated
-""")
-            send_telegram_message("⚠️ Expiry Day Detected. Using special expiry analysis.")
-            
-            current_time_str = now.strftime("%H:%M:%S")
-            new_row = pd.DataFrame([[current_time_str, underlying]], columns=["Time", "Spot"])
-            st.session_state['price_data'] = pd.concat([st.session_state['price_data'], new_row], ignore_index=True)
-            
-            st.markdown(f"### 📍 Spot Price: {underlying}")
-            
-            # Add previous close data (you might need to get this from another Dhan API endpoint)
-            df['previousClose_CE'] = df['lastPrice_CE'] * 0.95  # Placeholder
-            df['previousClose_PE'] = df['lastPrice_PE'] * 0.95  # Placeholder
-            df['underlyingValue'] = underlying
-            
-            df['Level'] = df.apply(determine_level, axis=1)
-            support_levels = df[df['Level'] == "Support"]['strikePrice'].unique()
-            resistance_levels = df[df['Level'] == "Resistance"]['strikePrice'].unique()
-            
-            expiry_signals = expiry_entry_signal(df, support_levels, resistance_levels)
-            
-            st.markdown("### 🎯 Expiry Day Signals")
-            if expiry_signals:
-                for signal in expiry_signals:
-                    st.success(f"""
-                    {signal['type']} at {signal['strike']} 
-                    (Score: {signal['score']:.1f}, LTP: ₹{signal['ltp']})
-                    Reason: {signal['reason']}
-                    """)
-                    
-                    trade_data = {
-                        "Time": now.strftime("%H:%M:%S"),
-                        "Strike": signal['strike'],
-                        "Type": 'CE' if 'CALL' in signal['type'] else 'PE',
-                        "LTP": signal['ltp'],
-                        "Target": round(signal['ltp'] * 1.2, 2),
-                        "SL": round(signal['ltp'] * 0.8, 2)
-                    }
-                    
-                    # Store trade in Supabase
-                    store_trade_log(trade_data)
-                    
-                    send_telegram_message(
-                        f"📅 EXPIRY DAY SIGNAL\n"
-                        f"Type: {signal['type']}\n"
-                        f"Strike: {signal['strike']}\n"
-                        f"Score: {signal['score']:.1f}\n"
-                        f"LTP: ₹{signal['ltp']}\n"
-                        f"Reason: {signal['reason']}\n"
-                        f"Spot: {underlying}"
-                    )
-            else:
-                st.warning("No strong expiry day signals detected")
-            
-            with st.expander("📊 Expiry Day Option Chain"):
-                df['ExpiryBiasScore'] = df.apply(expiry_bias_score, axis=1)
-                st.dataframe(df[['strikePrice', 'ExpiryBiasScore', 'lastPrice_CE', 'lastPrice_PE', 
-                               'changeinOpenInterest_CE', 'changeinOpenInterest_PE',
-                               'bidQty_CE', 'bidQty_PE']])
-            
-            return
-            
-        # Non-expiry day processing continues...
+        # The rest of your analysis logic remains the same
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
             if abs(row['strikePrice'] - atm_strike) > 100:
@@ -1115,10 +964,7 @@ def analyze():
 
             # Add bid/ask pressure calculation
             bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
-                row.get('bidQty_CE', 0), 
-                row.get('askQty_CE', 0),                                 
-                row.get('bidQty_PE', 0), 
-                row.get('askQty_PE', 0)
+                row['bidQty_CE'], row['askQty_CE'],                                 row['bidQty_PE'], row['askQty_PE']
             )
             
             score = 0
@@ -1126,16 +972,16 @@ def analyze():
                 "Strike": row['strikePrice'],
                 "Zone": row['Zone'],
                 "Level": row['Level'],
-                "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
-                "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
-                "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) < row.get('Gamma_PE', 0) else "Bearish",
-                "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
-                "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
-                "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "Bearish",
+                "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
+                "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
+                "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
+                "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
+                "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
+                "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
                 "DVP_Bias": delta_volume_bias(
-                    row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
-                    row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
-                    row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
+                    row['lastPrice_CE'] - row['lastPrice_PE'],
+                    row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
+                    row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
                 ),
                 # Add bid/ask pressure to the row data
                 "BidAskPressure": bid_ask_pressure,
@@ -1167,13 +1013,13 @@ def analyze():
             how='left'
         )
 
-        # FIXED: Corrected the PCR calculation syntax
         df_summary['PCR'] = (
-            df_summary['openInterest_PE'] / df_summary['openInterest_CE']
+            (df_summary['openInterest_PE'] + df_summary['changeinOpenInterest_PE']) / 
+            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE'])
         )
 
         df_summary['PCR'] = np.where(
-            df_summary['openInterest_CE'] == 0,
+            (df_summary['openInterest_CE'] + df_summary['changeinOpenInterest_CE']) == 0,
             0,
             df_summary['PCR']
         )
