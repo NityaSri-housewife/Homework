@@ -296,14 +296,7 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     # Add expanders for detailed data views
     with st.expander("View PCR Analysis Explanation"):
         st.markdown("""
-        ### PCR (Put-Call Ratio) Analysis:
-        - **PCR > 1.5**: Strong Support - High put writing indicates strong support at this level
-        - **PCR 1.2-1.5**: Support - Moderate put writing indicates support
-        - **PCR 0.8-1.2**: Neutral - Balanced put/call activity
-        - **PCR 0.5-0.8**: Resistance - Moderate call writing indicates resistance
-        - **PCR < 0.5**: Strong Resistance - High call writing indicates strong resistance
-        
-        PCR is calculated as: `Put Open Interest / Call Open Interest`
+        ### PCR `
         """)
     
     # Summary metrics
