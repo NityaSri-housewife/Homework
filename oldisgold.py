@@ -195,7 +195,7 @@ def analyze_bias(df, underlying, atm_strike, band):
             "BidQty_Bias": "DN" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Up",
             "IV_CE": row.get('impliedVolatility_CE', 0),
             "IV_PE": row.get('impliedVolatility_PE', 0),
-            "IV_Bias": "Up" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "DN",
+            "IV_Bias": "Up" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "DN",
             "LTP_CE": row.get('lastPrice_CE', 0),
             "LTP_PE": row.get('lastPrice_PE', 0),
             "DVP_Bias": delta_volume_bias(
