@@ -3,21 +3,39 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime
+from supabase import create_client, Client
+import telegram
 
 # ========== CONFIG ==========
 try:
+    # Dhan API
     DHAN_ACCESS_TOKEN = st.secrets["DHAN_ACCESS_TOKEN"]
     DHAN_CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
+    
+    # Supabase
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    
+    # Telegram
+    TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
+    TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 except:
-    st.error("Set up Dhan API credentials in Streamlit secrets")
+    st.error("Set up all required credentials in Streamlit secrets")
     st.stop()
 
 UNDERLYING_SCRIP = 13
 UNDERLYING_SEG = "IDX_I"
 EXPIRY_OVERRIDE = None
+STOP_LOSS_POINTS = 20
 
 # Support/Resistance parameters
 SUPPORT_RESISTANCE_ZONE_WIDTH = 0.01  # 1% zone around levels
+
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Initialize Telegram bot
+bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
 # Track active positions
 if 'active_positions' not in st.session_state:
@@ -35,6 +53,35 @@ WEIGHTS = {
     "PressureBias": 1.2,
     "PCR_Bias": 2.0
 }
+
+# ========== SUPABASE FUNCTIONS ==========
+def store_trade_log(trade_data):
+    """Store trade data in Supabase"""
+    try:
+        data, count = supabase.table("trade_logs").insert(trade_data).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error storing trade log: {e}")
+        return False
+
+def get_trade_logs():
+    """Retrieve trade logs from Supabase"""
+    try:
+        response = supabase.table("trade_logs").select("*").execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error retrieving trade logs: {e}")
+        return []
+
+# ========== TELEGRAM FUNCTIONS ==========
+def send_telegram_message(message):
+    """Send message via Telegram bot"""
+    try:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+        return True
+    except Exception as e:
+        st.error(f"Error sending Telegram message: {e}")
+        return False
 
 # ========== HELPERS ==========
 def delta_volume_bias(price_diff, volume_diff, chg_oi_diff):
@@ -198,6 +245,7 @@ def analyze_bias(df, underlying, atm_strike, band):
 def generate_signals(results, underlying, support_zones, resistance_zones):
     signals = []
     exit_signals = []
+    sl_signals = []
     
     # Check if price is near support or resistance
     near_support = any(zone[0] <= underlying <= zone[1] for zone in support_zones)
@@ -206,7 +254,7 @@ def generate_signals(results, underlying, support_zones, resistance_zones):
     # Find ATM strike result
     atm_result = next((r for r in results if r["Zone"] == "ATM"), None)
     if not atm_result:
-        return signals, exit_signals
+        return signals, exit_signals, sl_signals
     
     # Check conditions for signal generation
     total_score = atm_result["Total_Score"]
@@ -214,62 +262,148 @@ def generate_signals(results, underlying, support_zones, resistance_zones):
     
     # Generate entry signals
     if near_support and total_score >= 4 and ask_qty_bias == "Bullish":
-        signals.append({
+        signal_data = {
             "type": "CALL",
             "action": "ENTRY",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "reason": f"Price at support, ATM score: {total_score}, AskQty bias: {ask_qty_bias}"
-        })
+            "reason": f"Price at support, ATM score: {total_score}, AskQty bias: {ask_qty_bias}",
+            "price": underlying,
+            "stop_loss": underlying - STOP_LOSS_POINTS
+        }
+        signals.append(signal_data)
+        
+        # Store in Supabase
+        store_trade_log(signal_data)
+        
+        # Send Telegram message
+        send_telegram_message(f"🟢 CALL ENTRY SIGNAL\nTime: {signal_data['timestamp']}\nPrice: {underlying:.2f}\nStop Loss: {signal_data['stop_loss']:.2f}\nReason: {signal_data['reason']}")
+        
         # Add to active positions
         st.session_state.active_positions.append({
             "type": "CALL",
             "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "entry_price": underlying
+            "entry_price": underlying,
+            "stop_loss": underlying - STOP_LOSS_POINTS
         })
     
     if near_resistance and total_score <= -4 and ask_qty_bias == "Bearish":
-        signals.append({
+        signal_data = {
             "type": "PUT",
             "action": "ENTRY",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "reason": f"Price at resistance, ATM score: {total_score}, AskQty bias: {ask_qty_bias}"
-        })
+            "reason": f"Price at resistance, ATM score: {total_score}, AskQty bias: {ask_qty_bias}",
+            "price": underlying,
+            "stop_loss": underlying + STOP_LOSS_POINTS
+        }
+        signals.append(signal_data)
+        
+        # Store in Supabase
+        store_trade_log(signal_data)
+        
+        # Send Telegram message
+        send_telegram_message(f"🔴 PUT ENTRY SIGNAL\nTime: {signal_data['timestamp']}\nPrice: {underlying:.2f}\nStop Loss: {signal_data['stop_loss']:.2f}\nReason: {signal_data['reason']}")
+        
         # Add to active positions
         st.session_state.active_positions.append({
             "type": "PUT",
             "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "entry_price": underlying
+            "entry_price": underlying,
+            "stop_loss": underlying + STOP_LOSS_POINTS
         })
     
+    # Check for stop loss hits
+    for position in st.session_state.active_positions[:]:
+        if position["type"] == "CALL" and underlying <= position["stop_loss"]:
+            sl_data = {
+                "type": "CALL",
+                "action": "STOP_LOSS",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": f"Stop loss hit at {underlying:.2f}",
+                "entry_time": position["entry_time"],
+                "entry_price": position["entry_price"],
+                "exit_price": underlying,
+                "pnl": underlying - position["entry_price"]
+            }
+            sl_signals.append(sl_data)
+            
+            # Store in Supabase
+            store_trade_log(sl_data)
+            
+            # Send Telegram message
+            send_telegram_message(f"🟡 CALL STOP LOSS\nEntry: {position['entry_price']:.2f}\nExit: {underlying:.2f}\nP&L: {sl_data['pnl']:.2f}\nTime: {sl_data['timestamp']}")
+            
+            # Remove from active positions
+            st.session_state.active_positions.remove(position)
+        
+        elif position["type"] == "PUT" and underlying >= position["stop_loss"]:
+            sl_data = {
+                "type": "PUT",
+                "action": "STOP_LOSS",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": f"Stop loss hit at {underlying:.2f}",
+                "entry_time": position["entry_time"],
+                "entry_price": position["entry_price"],
+                "exit_price": underlying,
+                "pnl": position["entry_price"] - underlying
+            }
+            sl_signals.append(sl_data)
+            
+            # Store in Supabase
+            store_trade_log(sl_data)
+            
+            # Send Telegram message
+            send_telegram_message(f"🟡 PUT STOP LOSS\nEntry: {position['entry_price']:.2f}\nExit: {underlying:.2f}\nP&L: {sl_data['pnl']:.2f}\nTime: {sl_data['timestamp']}")
+            
+            # Remove from active positions
+            st.session_state.active_positions.remove(position)
+    
     # Generate exit signals for active positions
-    for position in st.session_state.active_positions[:]:  # Create a copy for iteration
+    for position in st.session_state.active_positions[:]:
         if position["type"] == "CALL" and near_resistance:
-            exit_signals.append({
+            exit_data = {
                 "type": "CALL",
                 "action": "EXIT",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "reason": f"Price reached resistance zone for CALL exit",
                 "entry_time": position["entry_time"],
                 "entry_price": position["entry_price"],
-                "exit_price": underlying
-            })
+                "exit_price": underlying,
+                "pnl": underlying - position["entry_price"]
+            }
+            exit_signals.append(exit_data)
+            
+            # Store in Supabase
+            store_trade_log(exit_data)
+            
+            # Send Telegram message
+            send_telegram_message(f"🟡 CALL EXIT SIGNAL\nEntry: {position['entry_price']:.2f}\nExit: {underlying:.2f}\nP&L: {exit_data['pnl']:.2f}\nTime: {exit_data['timestamp']}")
+            
             # Remove from active positions
             st.session_state.active_positions.remove(position)
         
         elif position["type"] == "PUT" and near_support:
-            exit_signals.append({
+            exit_data = {
                 "type": "PUT",
                 "action": "EXIT",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "reason": f"Price reached support zone for PUT exit",
                 "entry_time": position["entry_time"],
                 "entry_price": position["entry_price"],
-                "exit_price": underlying
-            })
+                "exit_price": underlying,
+                "pnl": position["entry_price"] - underlying
+            }
+            exit_signals.append(exit_data)
+            
+            # Store in Supabase
+            store_trade_log(exit_data)
+            
+            # Send Telegram message
+            send_telegram_message(f"🟡 PUT EXIT SIGNAL\nEntry: {position['entry_price']:.2f}\nExit: {underlying:.2f}\nP&L: {exit_data['pnl']:.2f}\nTime: {exit_data['timestamp']}")
+            
             # Remove from active positions
             st.session_state.active_positions.remove(position)
     
-    return signals, exit_signals
+    return signals, exit_signals, sl_signals
 
 def extract_support_resistance_zones(results, underlying):
     support_zones = []
@@ -319,7 +453,7 @@ def color_support_resistance(val):
     elif val == "Resistance": return 'background-color: #FFEBEE; color: #C62828;'
     return ''
 
-def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_signals, support_zones, resistance_zones):
+def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_signals, sl_signals, support_zones, resistance_zones):
     st.title("Option Chain Bias Dashboard")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
     
@@ -332,6 +466,7 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_sig
             else:
                 st.error(f"🔴 PUT ENTRY SIGNAL - {signal['timestamp']}")
             st.info(f"Reason: {signal['reason']}")
+            st.info(f"Price: {signal['price']:.2f} | Stop Loss: {signal['stop_loss']:.2f}")
     
     if exit_signals:
         st.subheader("🚪 EXIT SIGNALS")
@@ -341,29 +476,33 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_sig
             else:
                 st.warning(f"🟡 PUT EXIT SIGNAL - {signal['timestamp']}")
             st.info(f"Reason: {signal['reason']}")
-            # Calculate P&L
-            if signal["type"] == "CALL":
-                pnl = signal["exit_price"] - signal["entry_price"]
-                pnl_color = "green" if pnl > 0 else "red"
-                st.write(f"P&L: :{pnl_color}[{pnl:.2f}] points")
-            else:
-                pnl = signal["entry_price"] - signal["exit_price"]
-                pnl_color = "green" if pnl > 0 else "red"
-                st.write(f"P&L: :{pnl_color}[{pnl:.2f}] points")
+            st.info(f"Entry: {signal['entry_price']:.2f} | Exit: {signal['exit_price']:.2f} | P&L: {signal['pnl']:.2f}")
     
-    if not signals and not exit_signals:
+    if sl_signals:
+        st.subheader("⛔ STOP LOSS SIGNALS")
+        for signal in sl_signals:
+            if signal["type"] == "CALL":
+                st.error(f"🔴 CALL STOP LOSS - {signal['timestamp']}")
+            else:
+                st.error(f"🔴 PUT STOP LOSS - {signal['timestamp']}")
+            st.info(f"Reason: {signal['reason']}")
+            st.info(f"Entry: {signal['entry_price']:.2f} | Exit: {signal['exit_price']:.2f} | P&L: {signal['pnl']:.2f}")
+    
+    if not signals and not exit_signals and not sl_signals:
         st.info("No trading signals at the moment")
     
     # Display active positions
     if st.session_state.active_positions:
         st.subheader("📊 ACTIVE POSITIONS")
         for position in st.session_state.active_positions:
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.write(f"Type: {position['type']}")
             with col2:
                 st.write(f"Entry: {position['entry_price']:.2f}")
             with col3:
+                st.write(f"Stop Loss: {position['stop_loss']:.2f}")
+            with col4:
                 st.write(f"Time: {position['entry_time']}")
     
     # Display support/resistance zones with spot price in middle
@@ -388,6 +527,24 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_sig
                 st.write(f"{zone[0]:.2f} to {zone[1]:.2f}")
         else:
             st.write("No resistance zones near current price")
+    
+    # Display trade history from Supabase
+    st.subheader("📋 TRADE HISTORY")
+    trade_logs = get_trade_logs()
+    if trade_logs:
+        df_logs = pd.DataFrame(trade_logs)
+        st.dataframe(df_logs)
+        
+        # Download button for Excel
+        csv = df_logs.to_csv(index=False)
+        st.download_button(
+            label="Download Trade Log as CSV",
+            data=csv,
+            file_name="trade_logs.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("No trade history available")
     
     if not results:
         st.warning("No data to display.")
@@ -415,9 +572,9 @@ def main():
             
             # Extract support/resistance zones and generate signals
             support_zones, resistance_zones = extract_support_resistance_zones(results, underlying)
-            signals, exit_signals = generate_signals(results, underlying, support_zones, resistance_zones)
+            signals, exit_signals, sl_signals = generate_signals(results, underlying, support_zones, resistance_zones)
             
-            show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_signals, support_zones, resistance_zones)
+            show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_signals, sl_signals, support_zones, resistance_zones)
         except Exception as e:
             st.error(f"Error: {e}")
 
