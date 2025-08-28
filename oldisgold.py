@@ -7,14 +7,19 @@ from supabase import create_client, Client
 
 # ========== CONFIG ==========
 try:
-    DHAN_ACCESS_TOKEN = st.secrets["DHAN_ACCESS_TOKEN"]
-    DHAN_CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
-    TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
-    TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-except:
-    st.error("Set up Dhan API, Telegram, Supabase credentials in Streamlit secrets")
+    # Dhan API credentials
+    DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
+    DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
+
+    # Supabase credentials
+    SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
+
+    # Telegram credentials
+    TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
+    TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
+except Exception as e:
+    st.error("Please set up API credentials in Streamlit secrets.toml")
     st.stop()
 
 # Supabase client
@@ -24,7 +29,7 @@ UNDERLYING_SCRIP = 13
 UNDERLYING_SEG = "IDX_I"
 EXPIRY_OVERRIDE = None
 
-# Weights
+# Weights for bias scoring
 WEIGHTS = {
     "ChgOI_Bias": 1.5,
     "Volume_Bias": 1.2,
@@ -219,7 +224,6 @@ def process_signals(results, underlying_price):
 
     # Exit Signals
     for s in open_signals:
-        # Fetch current row for strike
         row = next((r for r in results if r["Strike"]==s["strike"]), None)
         if row:
             zone_start, zone_end = [float(x) for x in row['Zone_Width'].split(" to ")]
@@ -249,9 +253,8 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
     # Auto-refresh every 30 seconds
-    st_autorefresh = st.experimental_rerun
-    count = st.experimental_data_editor([], num_rows="dynamic")
-    st.experimental_rerun()  # ensure refresh
+    st.experimental_autorefresh(interval=30 * 1000, key="auto_refresh")
+
     with st.spinner("Fetching option chain data..."):
         try:
             expiry = EXPIRY_OVERRIDE or fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)[0]
@@ -263,6 +266,4 @@ def main():
         except Exception as e: st.error(f"Error: {e}")
 
 if __name__ == "__main__":
-    # Auto-refresh every 30 seconds
-    st.experimental_set_query_params(reload=int(datetime.utcnow().timestamp()))
     main()
