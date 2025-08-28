@@ -122,15 +122,28 @@ def calculate_pcr(pe_oi, ce_oi):
     return pe_oi / ce_oi if ce_oi != 0 else float('inf')
 
 def determine_pcr_level(pcr_value):
-    if pcr_value >= 3: return "Strong Support", "Strike price -20"
-    elif pcr_value >= 2: return "Strong Support", "Strike price -15"
-    elif pcr_value >= 1.5: return "Support", "Strike price -10"
-    elif pcr_value >= 1.2: return "Support", "Strike price -5"
-    elif 0.71 <= pcr_value <= 1.19: return "Neutral", "0"
-    elif pcr_value <= 0.5 and pcr_value > 0.4: return "Resistance", "Strike price +10"
-    elif pcr_value <= 0.4 and pcr_value > 0.3: return "Resistance", "Strike price +15"
-    elif pcr_value <= 0.3 and pcr_value > 0.2: return "Strong Resistance", "Strike price +20"
-    else: return "Strong Resistance", "Strike price +25"
+    if pcr_value >= 3:
+        return "Strong Support", "Strike price -20"
+    elif 2 <= pcr_value < 3:
+        return "Strong Support", "Strike price -15"
+    elif 1.5 <= pcr_value < 2:
+        return "Support", "Strike price -10"
+    elif 1.2 <= pcr_value < 1.5:
+        return "Support", "Strike price -5"
+    elif 0.71 <= pcr_value < 1.2:
+        return "Neutral", "0"
+    elif 0.51 <= pcr_value < 0.71:
+        return "Resistance", "Strike price +5"
+    elif 0.41 <= pcr_value < 0.51:
+        return "Resistance", "Strike price +10"
+    elif 0.31 <= pcr_value < 0.41:
+        return "Resistance", "Strike price +15"
+    elif 0.21 <= pcr_value < 0.31:
+        return "Strong Resistance", "Strike price +20"
+    elif 0 <= pcr_value <= 0.2:
+        return "Strong Resistance", "Strike price +25"
+    else:
+        return "Invalid PCR", "-"
 
 def calculate_zone_width(strike, zone_width_str):
     if zone_width_str == "0": return f"{strike} to {strike}"
@@ -421,10 +434,9 @@ def extract_support_resistance_zones(results, underlying):
         elif "Resistance" in sr_level:
             resistance_zones.append((min_val, max_val))
     
-    # Filter zones to only those near the current spot price
-    price_range = underlying * 0.05  # 5% range around spot price
-    near_support_zones = [zone for zone in support_zones if zone[0] <= underlying + price_range and zone[1] >= underlying - price_range]
-    near_resistance_zones = [zone for zone in resistance_zones if zone[0] <= underlying + price_range and zone[1] >= underlying - price_range]
+    # Keep only zones where spot is actually inside PCR-derived ranges
+    near_support_zones = [zone for zone in support_zones if zone[0] <= underlying <= zone[1]]
+    near_resistance_zones = [zone for zone in resistance_zones if zone[0] <= underlying <= zone[1]]
     
     return near_support_zones, near_resistance_zones
 
