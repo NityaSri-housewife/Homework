@@ -862,7 +862,7 @@ def analyze():
         # Process option chain data
         oc_data = data['oc']
         
-        # Convert to DataFrame format similar to NSE
+        # Convert to DataFrame format
         calls, puts = [], []
         for strike, strike_data in oc_data.items():
             if 'ce' in strike_data:
@@ -883,7 +883,7 @@ def analyze():
         # Merge call and put data
         df = pd.merge(df_ce, df_pe, on='strikePrice', suffixes=('_CE', '_PE')).sort_values('strikePrice')
         
-        # Rename columns to match NSE format
+        # Rename columns to match expected format
         column_mapping = {
             'last_price': 'lastPrice',
             'oi': 'openInterest',
@@ -918,14 +918,18 @@ def analyze():
             strike = row['strikePrice']
             
             # Calculate Greeks for CE
-            if row['impliedVolatility_CE'] > 0:
+            if 'impliedVolatility_CE' in df.columns and row['impliedVolatility_CE'] > 0:
                 greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
                 df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
+            else:
+                df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = 0, 0, 0, 0, 0
             
             # Calculate Greeks for PE
-            if row['impliedVolatility_PE'] > 0:
+            if 'impliedVolatility_PE' in df.columns and row['impliedVolatility_PE'] > 0:
                 greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
                 df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
+            else:
+                df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = 0, 0, 0, 0, 0
 
         # Continue with your existing analysis logic...
         atm_strike = min(df['strikePrice'], key=lambda x: abs(x - underlying))
@@ -933,9 +937,9 @@ def analyze():
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
 
-        # Open Interest Change Comparison
-        total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
-        total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
+        # Open Interest Change Comparison - Handle missing data
+        total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000 if 'changeinOpenInterest_CE' in df.columns else 0
+        total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000 if 'changeinOpenInterest_PE' in df.columns else 0
         
         st.markdown("## 📊 Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
@@ -956,15 +960,20 @@ def analyze():
         else:
             st.info("⚖️ OI Changes Balanced")
 
-        # The rest of your analysis logic remains the same
+        # The rest of your analysis logic
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
             if abs(row['strikePrice'] - atm_strike) > 100:
                 continue
 
-            # Add bid/ask pressure calculation
+            # Add bid/ask pressure calculation with safe defaults
+            call_bid_qty = row.get('bidQty_CE', 0)
+            call_ask_qty = row.get('askQty_CE', 0)
+            put_bid_qty = row.get('bidQty_PE', 0)
+            put_ask_qty = row.get('askQty_PE', 0)
+            
             bid_ask_pressure, pressure_bias = calculate_bid_ask_pressure(
-                row['bidQty_CE'], row['askQty_CE'],                                 row['bidQty_PE'], row['askQty_PE']
+                call_bid_qty, call_ask_qty, put_bid_qty, put_ask_qty
             )
             
             score = 0
@@ -972,18 +981,17 @@ def analyze():
                 "Strike": row['strikePrice'],
                 "Zone": row['Zone'],
                 "Level": row['Level'],
-                "ChgOI_Bias": "Bullish" if row['changeinOpenInterest_CE'] < row['changeinOpenInterest_PE'] else "Bearish",
-                "Volume_Bias": "Bullish" if row['totalTradedVolume_CE'] < row['totalTradedVolume_PE'] else "Bearish",
-                "Gamma_Bias": "Bullish" if row['Gamma_CE'] < row['Gamma_PE'] else "Bearish",
-                "AskQty_Bias": "Bullish" if row['askQty_PE'] > row['askQty_CE'] else "Bearish",
-                "BidQty_Bias": "Bearish" if row['bidQty_PE'] > row['bidQty_CE'] else "Bullish",
-                "IV_Bias": "Bullish" if row['impliedVolatility_CE'] > row['impliedVolatility_PE'] else "Bearish",
+                "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
+                "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
+                "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) < row.get('Gamma_PE', 0) else "Bearish",
+                "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+                "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
+                "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) > row.get('impliedVolatility_PE', 0) else "Bearish",
                 "DVP_Bias": delta_volume_bias(
-                    row['lastPrice_CE'] - row['lastPrice_PE'],
-                    row['totalTradedVolume_CE'] - row['totalTradedVolume_PE'],
-                    row['changeinOpenInterest_CE'] - row['changeinOpenInterest_PE']
+                    row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
+                    row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
+                    row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
                 ),
-                # Add bid/ask pressure to the row data
                 "BidAskPressure": bid_ask_pressure,
                 "PressureBias": pressure_bias
             }
@@ -992,7 +1000,6 @@ def analyze():
                 if "_Bias" in k:
                     bias = row_data[k]
                     score += weights.get(k, 1) if bias == "Bullish" else -weights.get(k, 1)
-                # Add pressure bias to scoring
                 elif k == "PressureBias":
                     score += weights.get("PressureBias", 1) if bias == "Bullish" else -weights.get("PressureBias", 1)
 
@@ -1129,7 +1136,7 @@ def analyze():
                         continue
 
                 ltp = df.loc[df['strikePrice'] == row['Strike'], f'lastPrice_{option_type}'].values[0]
-                iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0]
+                iv = df.loc[df['strikePrice'] == row['Strike'], f'impliedVolatility_{option_type}'].values[0] if f'impliedVolatility_{option_type}' in df.columns else 20
                 target = round(ltp * (1 + iv / 100), 2)
                 stop_loss = round(ltp * 0.8, 2)
 
