@@ -15,12 +15,6 @@ UNDERLYING_SCRIP = 13
 UNDERLYING_SEG = "IDX_I"
 EXPIRY_OVERRIDE = None
 
-PCR_STRONG_SUPPORT = 1.5
-PCR_SUPPORT = 1.2
-PCR_NEUTRAL_LOW = 0.8
-PCR_RESISTANCE = 0.8
-PCR_STRONG_RESISTANCE = 0.5
-
 # ========== HELPERS ==========
 def delta_volume_bias(price_diff, volume_diff, chg_oi_diff):
     if price_diff > 0 and volume_diff > 0 and chg_oi_diff > 0: return "Bullish"
@@ -33,26 +27,35 @@ def calculate_pcr(pe_oi, ce_oi):
     return pe_oi / ce_oi if ce_oi != 0 else float('inf')
 
 def determine_pcr_level(pcr_value):
-    if pcr_value >= 3: return "Strong Support", "Strike price to +30"
-    elif pcr_value >= 2: return "Strong Support", "Strike price to +15"
-    elif pcr_value >= 1.5: return "Support", "Strike price to -10"
-    elif pcr_value >= 1.2: return "Support", "Strike price to -20"
-    elif pcr_value >= 0.7: return "Neutral", "0"
-    elif pcr_value <= 0.5: return "Resistance", "Strike price to +20"
-    elif pcr_value <= 0.4: return "Resistance", "Strike price to +10"
-    elif pcr_value <= 0.3: return "Strong Resistance", "Strike price to -15"
-    else: return "Strong Resistance", "Strike price to -30"
+    if pcr_value >= 3: 
+        return "Strong Support", "Strike price -20"
+    elif pcr_value >= 2: 
+        return "Strong Support", "Strike price -15"
+    elif pcr_value >= 1.5: 
+        return "Support", "Strike price -10"
+    elif pcr_value >= 1.2: 
+        return "Support", "Strike price -5"
+    elif 0.71 <= pcr_value <= 1.19: 
+        return "Neutral", "0"
+    elif pcr_value <= 0.5 and pcr_value > 0.4: 
+        return "Resistance", "Strike price +10"
+    elif pcr_value <= 0.4 and pcr_value > 0.3: 
+        return "Resistance", "Strike price +15"
+    elif pcr_value <= 0.3 and pcr_value > 0.2: 
+        return "Strong Resistance", "Strike price +20"
+    else:  # pcr_value <= 0.2
+        return "Strong Resistance", "Strike price +25"
 
 def calculate_zone_width(strike, zone_width_str):
     if zone_width_str == "0": return f"{strike} to {strike}"
     
     try:
-        operation, value = zone_width_str.split(" to ")
+        operation, value = zone_width_str.split(" price ")
         value = int(value.replace("+", "").replace("-", ""))
-        if "Strike price to +" in zone_width_str:
-            return f"{strike} to {strike + value}"
-        elif "Strike price to -" in zone_width_str:
+        if "Strike price -" in zone_width_str:
             return f"{strike - value} to {strike}"
+        elif "Strike price +" in zone_width_str:
+            return f"{strike} to {strike + value}"
     except:
         return f"{strike} to {strike}"
     
