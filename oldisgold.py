@@ -191,12 +191,12 @@ def analyze_bias(df, underlying, atm_strike, band):
     return results
 
 # ========== SIGNAL GENERATION ==========
-def generate_signals(results, underlying, support_levels, resistance_levels):
+def generate_signals(results, underlying, support_zones, resistance_zones):
     signals = []
     
     # Check if price is near support or resistance
-    near_support = any(abs(underlying - level) / level <= SUPPORT_RESISTANCE_ZONE_WIDTH for level in support_levels)
-    near_resistance = any(abs(underlying - level) / level <= SUPPORT_RESISTANCE_ZONE_WIDTH for level in resistance_levels)
+    near_support = any(zone[0] <= underlying <= zone[1] for zone in support_zones)
+    near_resistance = any(zone[0] <= underlying <= zone[1] for zone in resistance_zones)
     
     if not (near_support or near_resistance):
         return signals  # No signal if not near S/R
@@ -226,20 +226,35 @@ def generate_signals(results, underlying, support_levels, resistance_levels):
     
     return signals
 
-def extract_support_resistance_levels(results):
-    support_levels = []
-    resistance_levels = []
+def extract_support_resistance_zones(results, underlying):
+    support_zones = []
+    resistance_zones = []
     
     for result in results:
         strike = result["Strike"]
         sr_level = result["Support_Resistance"]
+        zone_width = result["Zone_Width"]
+        
+        # Parse zone width to get min and max values
+        try:
+            if "to" in zone_width:
+                min_val, max_val = map(float, zone_width.split(" to "))
+            else:
+                min_val = max_val = float(zone_width)
+        except:
+            min_val = max_val = strike
         
         if "Support" in sr_level:
-            support_levels.append(strike)
+            support_zones.append((min_val, max_val))
         elif "Resistance" in sr_level:
-            resistance_levels.append(strike)
+            resistance_zones.append((min_val, max_val))
     
-    return support_levels, resistance_levels
+    # Filter zones to only those near the current spot price
+    price_range = underlying * 0.05  # 5% range around spot price
+    near_support_zones = [zone for zone in support_zones if zone[0] <= underlying + price_range and zone[1] >= underlying - price_range]
+    near_resistance_zones = [zone for zone in resistance_zones if zone[0] <= underlying + price_range and zone[1] >= underlying - price_range]
+    
+    return near_support_zones, near_resistance_zones
 
 # ========== UI ==========
 def color_bias(val):
@@ -259,7 +274,7 @@ def color_support_resistance(val):
     elif val == "Resistance": return 'background-color: #FFEBEE; color: #C62828;'
     return ''
 
-def show_streamlit_ui(results, underlying, expiry, atm_strike, signals):
+def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, support_zones, resistance_zones):
     st.title("Option Chain Bias Dashboard")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
     
@@ -275,6 +290,29 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike, signals):
     else:
         st.info("No trading signals at the moment")
     
+    # Display support/resistance zones with spot price in middle
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        st.subheader("Support Zones")
+        if support_zones:
+            for zone in support_zones:
+                st.write(f"{zone[0]:.2f} to {zone[1]:.2f}")
+        else:
+            st.write("No support zones near current price")
+    
+    with col2:
+        st.subheader("Spot Price")
+        st.metric("Current Price", f"{underlying:.2f}")
+    
+    with col3:
+        st.subheader("Resistance Zones")
+        if resistance_zones:
+            for zone in resistance_zones:
+                st.write(f"{zone[0]:.2f} to {zone[1]:.2f}")
+        else:
+            st.write("No resistance zones near current price")
+    
     if not results:
         st.warning("No data to display.")
         return
@@ -287,18 +325,6 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike, signals):
     styled_df = styled_df.applymap(color_score, subset=['Total_Score'])
     
     st.dataframe(styled_df, use_container_width=True)
-    
-    # Display support/resistance levels
-    support_levels, resistance_levels = extract_support_resistance_levels(results)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Support Levels")
-        for level in support_levels:
-            st.write(f"- {level:.2f}")
-    with col2:
-        st.subheader("Resistance Levels")
-        for level in resistance_levels:
-            st.write(f"- {level:.2f}")
 
 # ========== MAIN ==========
 def main():
@@ -311,11 +337,11 @@ def main():
             atm_strike, band = determine_atm_band(df, underlying)
             results = analyze_bias(df, underlying, atm_strike, band)
             
-            # Extract support/resistance levels and generate signals
-            support_levels, resistance_levels = extract_support_resistance_levels(results)
-            signals = generate_signals(results, underlying, support_levels, resistance_levels)
+            # Extract support/resistance zones and generate signals
+            support_zones, resistance_zones = extract_support_resistance_zones(results, underlying)
+            signals = generate_signals(results, underlying, support_zones, resistance_zones)
             
-            show_streamlit_ui(results, underlying, expiry, atm_strike, signals)
+            show_streamlit_ui(results, underlying, expiry, atm_strike, signals, support_zones, resistance_zones)
         except Exception as e:
             st.error(f"Error: {e}")
 
