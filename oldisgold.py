@@ -19,6 +19,10 @@ EXPIRY_OVERRIDE = None
 # Support/Resistance parameters
 SUPPORT_RESISTANCE_ZONE_WIDTH = 0.01  # 1% zone around levels
 
+# Track active positions
+if 'active_positions' not in st.session_state:
+    st.session_state.active_positions = []
+
 # ========== SCORE WEIGHTS ==========
 WEIGHTS = {
     "ChgOI_Bias": 1.5,
@@ -193,38 +197,79 @@ def analyze_bias(df, underlying, atm_strike, band):
 # ========== SIGNAL GENERATION ==========
 def generate_signals(results, underlying, support_zones, resistance_zones):
     signals = []
+    exit_signals = []
     
     # Check if price is near support or resistance
     near_support = any(zone[0] <= underlying <= zone[1] for zone in support_zones)
     near_resistance = any(zone[0] <= underlying <= zone[1] for zone in resistance_zones)
     
-    if not (near_support or near_resistance):
-        return signals  # No signal if not near S/R
-    
     # Find ATM strike result
     atm_result = next((r for r in results if r["Zone"] == "ATM"), None)
     if not atm_result:
-        return signals
+        return signals, exit_signals
     
     # Check conditions for signal generation
     total_score = atm_result["Total_Score"]
     ask_qty_bias = atm_result["AskQty_Signal"]
     
+    # Generate entry signals
     if near_support and total_score >= 4 and ask_qty_bias == "Bullish":
         signals.append({
             "type": "CALL",
+            "action": "ENTRY",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "reason": f"Price at support, ATM score: {total_score}, AskQty bias: {ask_qty_bias}"
+        })
+        # Add to active positions
+        st.session_state.active_positions.append({
+            "type": "CALL",
+            "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "entry_price": underlying
         })
     
     if near_resistance and total_score <= -4 and ask_qty_bias == "Bearish":
         signals.append({
             "type": "PUT",
+            "action": "ENTRY",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "reason": f"Price at resistance, ATM score: {total_score}, AskQty bias: {ask_qty_bias}"
         })
+        # Add to active positions
+        st.session_state.active_positions.append({
+            "type": "PUT",
+            "entry_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "entry_price": underlying
+        })
     
-    return signals
+    # Generate exit signals for active positions
+    for position in st.session_state.active_positions[:]:  # Create a copy for iteration
+        if position["type"] == "CALL" and near_resistance:
+            exit_signals.append({
+                "type": "CALL",
+                "action": "EXIT",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": f"Price reached resistance zone for CALL exit",
+                "entry_time": position["entry_time"],
+                "entry_price": position["entry_price"],
+                "exit_price": underlying
+            })
+            # Remove from active positions
+            st.session_state.active_positions.remove(position)
+        
+        elif position["type"] == "PUT" and near_support:
+            exit_signals.append({
+                "type": "PUT",
+                "action": "EXIT",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "reason": f"Price reached support zone for PUT exit",
+                "entry_time": position["entry_time"],
+                "entry_price": position["entry_price"],
+                "exit_price": underlying
+            })
+            # Remove from active positions
+            st.session_state.active_positions.remove(position)
+    
+    return signals, exit_signals
 
 def extract_support_resistance_zones(results, underlying):
     support_zones = []
@@ -274,21 +319,52 @@ def color_support_resistance(val):
     elif val == "Resistance": return 'background-color: #FFEBEE; color: #C62828;'
     return ''
 
-def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, support_zones, resistance_zones):
+def show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_signals, support_zones, resistance_zones):
     st.title("Option Chain Bias Dashboard")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
     
     # Display signals
     if signals:
-        st.subheader("🎯 TRADING SIGNALS")
+        st.subheader("🎯 ENTRY SIGNALS")
         for signal in signals:
             if signal["type"] == "CALL":
                 st.success(f"🟢 CALL ENTRY SIGNAL - {signal['timestamp']}")
             else:
                 st.error(f"🔴 PUT ENTRY SIGNAL - {signal['timestamp']}")
             st.info(f"Reason: {signal['reason']}")
-    else:
+    
+    if exit_signals:
+        st.subheader("🚪 EXIT SIGNALS")
+        for signal in exit_signals:
+            if signal["type"] == "CALL":
+                st.warning(f"🟡 CALL EXIT SIGNAL - {signal['timestamp']}")
+            else:
+                st.warning(f"🟡 PUT EXIT SIGNAL - {signal['timestamp']}")
+            st.info(f"Reason: {signal['reason']}")
+            # Calculate P&L
+            if signal["type"] == "CALL":
+                pnl = signal["exit_price"] - signal["entry_price"]
+                pnl_color = "green" if pnl > 0 else "red"
+                st.write(f"P&L: :{pnl_color}[{pnl:.2f}] points")
+            else:
+                pnl = signal["entry_price"] - signal["exit_price"]
+                pnl_color = "green" if pnl > 0 else "red"
+                st.write(f"P&L: :{pnl_color}[{pnl:.2f}] points")
+    
+    if not signals and not exit_signals:
         st.info("No trading signals at the moment")
+    
+    # Display active positions
+    if st.session_state.active_positions:
+        st.subheader("📊 ACTIVE POSITIONS")
+        for position in st.session_state.active_positions:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.write(f"Type: {position['type']}")
+            with col2:
+                st.write(f"Entry: {position['entry_price']:.2f}")
+            with col3:
+                st.write(f"Time: {position['entry_time']}")
     
     # Display support/resistance zones with spot price in middle
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -339,9 +415,9 @@ def main():
             
             # Extract support/resistance zones and generate signals
             support_zones, resistance_zones = extract_support_resistance_zones(results, underlying)
-            signals = generate_signals(results, underlying, support_zones, resistance_zones)
+            signals, exit_signals = generate_signals(results, underlying, support_zones, resistance_zones)
             
-            show_streamlit_ui(results, underlying, expiry, atm_strike, signals, support_zones, resistance_zones)
+            show_streamlit_ui(results, underlying, expiry, atm_strike, signals, exit_signals, support_zones, resistance_zones)
         except Exception as e:
             st.error(f"Error: {e}")
 
