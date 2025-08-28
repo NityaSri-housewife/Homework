@@ -1,6 +1,6 @@
 # ================================
 # DhanHQ Option Chain Bias Dashboard (Streamlit)
-# Simplified version with only requested row data
+# Shows both bias indicators and actual data values
 # ================================
 
 import requests
@@ -178,12 +178,26 @@ def analyze_bias(df, underlying, atm_strike, band):
             "Strike": row['strikePrice'],
             "Zone": row['Zone'],
             "Level": row['Level'],
+            "ChgOI_CE": row.get('changeinOpenInterest_CE', 0),
+            "ChgOI_PE": row.get('changeinOpenInterest_PE', 0),
             "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
+            "Volume_CE": row.get('totalTradedVolume_CE', 0),
+            "Volume_PE": row.get('totalTradedVolume_PE', 0),
             "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
+            "Gamma_CE": row.get('Gamma_CE', 0),
+            "Gamma_PE": row.get('Gamma_PE', 0),
             "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) > row.get('Gamma_PE', 0) else "Bearish",
+            "AskQty_CE": row.get('askQty_CE', 0),
+            "AskQty_PE": row.get('askQty_PE', 0),
             "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+            "BidQty_CE": row.get('bidQty_CE', 0),
+            "BidQty_PE": row.get('bidQty_PE', 0),
             "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
+            "IV_CE": row.get('impliedVolatility_CE', 0),
+            "IV_PE": row.get('impliedVolatility_PE', 0),
             "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "Bearish",
+            "LTP_CE": row.get('lastPrice_CE', 0),
+            "LTP_PE": row.get('lastPrice_PE', 0),
             "DVP_Bias": delta_volume_bias(
                 row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
                 row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
@@ -212,9 +226,9 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     # Style the DataFrame with color coding
     def color_bias(val):
         if val == "Bullish":
-            return 'color: green; font-weight: bold'
+            return 'background-color: #E8F5E9; color: #2E7D32; font-weight: bold'
         elif val == "Bearish":
-            return 'color: red; font-weight: bold'
+            return 'background-color: #FFEBEE; color: #C62828; font-weight: bold'
         return ''
     
     # Apply styling to bias columns
@@ -223,9 +237,17 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     
     st.dataframe(styled_df, use_container_width=True)
     
+    # Add expanders for detailed data views
+    with st.expander("View Raw Data Values"):
+        st.dataframe(df_display.drop(columns=[col for col in df_display.columns if 'Bias' in col]), use_container_width=True)
+    
+    with st.expander("View Only Bias Indicators"):
+        bias_only_cols = ['Strike', 'Zone', 'Level'] + [col for col in df_display.columns if 'Bias' in col]
+        st.dataframe(df_display[bias_only_cols].style.applymap(color_bias, subset=[col for col in bias_only_cols if 'Bias' in col]), use_container_width=True)
+    
     # Summary metrics
     st.subheader("Summary")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         bull_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v == 'Bullish') > 4)
@@ -236,7 +258,28 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
         st.metric("Strong Bearish Signals", bear_count)
     
     with col3:
+        neutral_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v not in ['Bullish', 'Bearish']) > 4)
+        st.metric("Neutral Signals", neutral_count)
+    
+    with col4:
         st.metric("Total Strikes Analyzed", len(results))
+    
+    # Add a chart showing bias distribution
+    st.subheader("Bias Distribution")
+    bias_counts = {}
+    for col in bias_columns:
+        for r in results:
+            bias = r[col]
+            if bias not in bias_counts:
+                bias_counts[bias] = 0
+            bias_counts[bias] += 1
+    
+    if bias_counts:
+        chart_data = pd.DataFrame({
+            'Bias': list(bias_counts.keys()),
+            'Count': list(bias_counts.values())
+        })
+        st.bar_chart(chart_data.set_index('Bias'))
 
 # ========== MAIN ==========
 def main():
