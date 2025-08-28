@@ -25,13 +25,13 @@ EXPIRY_OVERRIDE = None        # Set to force a specific expiry
 # ========== HELPERS ==========
 def delta_volume_bias(price_diff, volume_diff, chg_oi_diff):
     if price_diff > 0 and volume_diff > 0 and chg_oi_diff > 0:
-        return "Bullish"
+        return "Up"
     elif price_diff < 0 and volume_diff > 0 and chg_oi_diff > 0:
-        return "Bearish"
+        return "DN"
     elif price_diff > 0 and volume_diff > 0 and chg_oi_diff < 0:
-        return "Bullish"
+        return "Up"
     elif price_diff < 0 and volume_diff > 0 and chg_oi_diff < 0:
-        return "Bearish"
+        return "DN"
     else:
         return "Neutral"
 
@@ -172,7 +172,7 @@ def analyze_bias(df, underlying, atm_strike, band):
         ce_pressure = row.get('bidQty_CE', 0) - row.get('askQty_CE', 0)
         pe_pressure = row.get('bidQty_PE', 0) - row.get('askQty_PE', 0)
         bid_ask_pressure = f"CE:{ce_pressure}, PE:{pe_pressure}"
-        pressure_bias = "Bullish" if pe_pressure > ce_pressure else "Bearish"
+        pressure_bias = "Up" if pe_pressure > ce_pressure else "DN"
         
         row_data = {
             "Strike": row['strikePrice'],
@@ -180,22 +180,22 @@ def analyze_bias(df, underlying, atm_strike, band):
             "Level": row['Level'],
             "ChgOI_CE": row.get('changeinOpenInterest_CE', 0),
             "ChgOI_PE": row.get('changeinOpenInterest_PE', 0),
-            "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
+            "ChgOI_Bias": "Up" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "DN",
             "Volume_CE": row.get('totalTradedVolume_CE', 0),
             "Volume_PE": row.get('totalTradedVolume_PE', 0),
-            "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
+            "Volume_Bias": "Up" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "DN",
             "Gamma_CE": row.get('Gamma_CE', 0),
             "Gamma_PE": row.get('Gamma_PE', 0),
-            "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) > row.get('Gamma_PE', 0) else "Bearish",
+            "Gamma_Bias": "Up" if row.get('Gamma_CE', 0) > row.get('Gamma_PE', 0) else "DN",
             "AskQty_CE": row.get('askQty_CE', 0),
             "AskQty_PE": row.get('askQty_PE', 0),
-            "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+            "AskQty_Bias": "Up" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "DN",
             "BidQty_CE": row.get('bidQty_CE', 0),
             "BidQty_PE": row.get('bidQty_PE', 0),
-            "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
+            "BidQty_Bias": "DN" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Up",
             "IV_CE": row.get('impliedVolatility_CE', 0),
             "IV_PE": row.get('impliedVolatility_PE', 0),
-            "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "Bearish",
+            "IV_Bias": "Up" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "DN",
             "LTP_CE": row.get('lastPrice_CE', 0),
             "LTP_PE": row.get('lastPrice_PE', 0),
             "DVP_Bias": delta_volume_bias(
@@ -225,9 +225,9 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     
     # Style the DataFrame with color coding
     def color_bias(val):
-        if val == "Bullish":
+        if val == "Up":
             return 'background-color: #E8F5E9; color: #2E7D32; font-weight: bold'
-        elif val == "Bearish":
+        elif val == "DN":
             return 'background-color: #FFEBEE; color: #C62828; font-weight: bold'
         return ''
     
@@ -250,15 +250,15 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        bull_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v == 'Bullish') > 4)
-        st.metric("Strong Bullish Signals", bull_count)
+        bull_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v == 'Up') > 4)
+        st.metric("Strong Up Signals", bull_count)
     
     with col2:
-        bear_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v == 'Bearish') > 4)
-        st.metric("Strong Bearish Signals", bear_count)
+        bear_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v == 'DN') > 4)
+        st.metric("Strong DN Signals", bear_count)
     
     with col3:
-        neutral_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v not in ['Bullish', 'Bearish']) > 4)
+        neutral_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v not in ['Up', 'DN']) > 4)
         st.metric("Neutral Signals", neutral_count)
     
     with col4:
