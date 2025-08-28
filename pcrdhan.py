@@ -85,6 +85,10 @@ if 'option_chain_history' not in st.session_state:
 if 'use_market_logic' not in st.session_state:
     st.session_state.use_market_logic = False
 
+# Initialize session state for previous OI data
+if 'previous_oi_data' not in st.session_state:
+    st.session_state.previous_oi_data = {}
+
 # === Telegram Config ===
 TELEGRAM_BOT_TOKEN = "8133685842:AAGdHCpi9QRIsS-fWW5Y1ArgKJvS95QL9xU"
 TELEGRAM_CHAT_ID = "5704496584"
@@ -422,6 +426,12 @@ def calculate_bid_ask_pressure(call_bid_qty, call_ask_qty, put_bid_qty, put_ask_
     
     return pressure, bias
 
+def calculate_change_in_oi(current_oi, previous_oi):
+    """Calculate change in open interest"""
+    if previous_oi == 0:
+        return current_oi  # If no previous data, assume all is new
+    return current_oi - previous_oi
+
 weights = {
     "ChgOI_Bias": 2,
     "Volume_Bias": 1,
@@ -587,7 +597,7 @@ def plot_price_with_sr():
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=support_zone[0], y1=support_zone[1],
-            fillcolor="rgba(0,255,0,0.08)", line=dict(width=0),
+            fillcolor="rg�0,255,0,0.08)", line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
@@ -903,10 +913,32 @@ def analyze():
             if f"{old_col}_PE" in df.columns:
                 df.rename(columns={f"{old_col}_PE": f"{new_col}_PE"}, inplace=True)
         
+        # Calculate change in open interest
+        df['changeinOpenInterest_CE'] = 0
+        df['changeinOpenInterest_PE'] = 0
+
+        # Calculate change in OI by comparing with previous data
+        for idx, row in df.iterrows():
+            strike = row['strikePrice']
+            
+            # For CE
+            previous_oi_ce = st.session_state.previous_oi_data.get(f"{strike}_CE", 0)
+            current_oi_ce = row.get('openInterest_CE', 0)
+            df.at[idx, 'changeinOpenInterest_CE'] = calculate_change_in_oi(current_oi_ce, previous_oi_ce)
+            
+            # For PE
+            previous_oi_pe = st.session_state.previous_oi_data.get(f"{strike}_PE", 0)
+            current_oi_pe = row.get('openInterest_PE', 0)
+            df.at[idx, 'changeinOpenInterest_PE'] = calculate_change_in_oi(current_oi_pe, previous_oi_pe)
+            
+            # Store current OI for next calculation
+            st.session_state.previous_oi_data[f"{strike}_CE"] = current_oi_ce
+            st.session_state.previous_oi_data[f"{strike}_PE"] = current_oi_pe
+        
         # Add missing columns with default values
-        for col in ['changeinOpenInterest_CE', 'changeinOpenInterest_PE', 'impliedVolatility_CE', 'impliedVolatility_PE']:
+        for col in ['impliedVolatility_CE', 'impliedVolatility_PE']:
             if col not in df.columns:
-                df[col] = 0
+                df[col] = 20  # Default IV of 20%
         
         # Calculate time to expiry
         expiry_date = datetime.strptime(expiry, "%Y-%m-%d").replace(tzinfo=timezone("Asia/Kolkata"))
@@ -918,15 +950,17 @@ def analyze():
             strike = row['strikePrice']
             
             # Calculate Greeks for CE
-            if 'impliedVolatility_CE' in df.columns and row['impliedVolatility_CE'] > 0:
-                greeks = calculate_greeks('CE', underlying, strike, T, r, row['impliedVolatility_CE'] / 100)
+            iv_ce = row.get('impliedVolatility_CE', 20)
+            if iv_ce > 0:
+                greeks = calculate_greeks('CE', underlying, strike, T, r, iv_ce / 100)
                 df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = greeks
             else:
                 df.at[idx, 'Delta_CE'], df.at[idx, 'Gamma_CE'], df.at[idx, 'Vega_CE'], df.at[idx, 'Theta_CE'], df.at[idx, 'Rho_CE'] = 0, 0, 0, 0, 0
             
             # Calculate Greeks for PE
-            if 'impliedVolatility_PE' in df.columns and row['impliedVolatility_PE'] > 0:
-                greeks = calculate_greeks('PE', underlying, strike, T, r, row['impliedVolatility_PE'] / 100)
+            iv_pe = row.get('impliedVolatility_PE', 20)
+            if iv_pe > 0:
+                greeks = calculate_greeks('PE', underlying, strike, T, r, iv_pe / 100)
                 df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = greeks
             else:
                 df.at[idx, 'Delta_PE'], df.at[idx, 'Gamma_PE'], df.at[idx, 'Vega_PE'], df.at[idx, 'Theta_PE'], df.at[idx, 'Rho_PE'] = 0, 0, 0, 0, 0
@@ -937,9 +971,9 @@ def analyze():
         df['Zone'] = df['strikePrice'].apply(lambda x: 'ATM' if x == atm_strike else 'ITM' if x < underlying else 'OTM')
         df['Level'] = df.apply(determine_level, axis=1)
 
-        # Open Interest Change Comparison - Handle missing data
-        total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000 if 'changeinOpenInterest_CE' in df.columns else 0
-        total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000 if 'changeinOpenInterest_PE' in df.columns else 0
+        # Open Interest Change Comparison
+        total_ce_change = df['changeinOpenInterest_CE'].sum() / 100000
+        total_pe_change = df['changeinOpenInterest_PE'].sum() / 100000
         
         st.markdown("## 📊 Open Interest Change (in Lakhs)")
         col1, col2 = st.columns(2)
