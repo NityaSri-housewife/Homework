@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
+from datetime import datetime
 
 # ========== CONFIG ==========
 try:
@@ -14,6 +15,9 @@ except:
 UNDERLYING_SCRIP = 13
 UNDERLYING_SEG = "IDX_I"
 EXPIRY_OVERRIDE = None
+
+# Support/Resistance parameters
+SUPPORT_RESISTANCE_ZONE_WIDTH = 0.01  # 1% zone around levels
 
 # ========== SCORE WEIGHTS ==========
 WEIGHTS = {
@@ -180,10 +184,62 @@ def analyze_bias(df, underlying, atm_strike, band):
             "PCR": pcr_oi,
             "Support_Resistance": pcr_level,
             "Zone_Width": zone_calculation,
-            "Total_Score": total_score
+            "Total_Score": total_score,
+            "AskQty_Signal": biases["AskQty_Bias"]  # Store for signal generation
         })
     
     return results
+
+# ========== SIGNAL GENERATION ==========
+def generate_signals(results, underlying, support_levels, resistance_levels):
+    signals = []
+    
+    # Check if price is near support or resistance
+    near_support = any(abs(underlying - level) / level <= SUPPORT_RESISTANCE_ZONE_WIDTH for level in support_levels)
+    near_resistance = any(abs(underlying - level) / level <= SUPPORT_RESISTANCE_ZONE_WIDTH for level in resistance_levels)
+    
+    if not (near_support or near_resistance):
+        return signals  # No signal if not near S/R
+    
+    # Find ATM strike result
+    atm_result = next((r for r in results if r["Zone"] == "ATM"), None)
+    if not atm_result:
+        return signals
+    
+    # Check conditions for signal generation
+    total_score = atm_result["Total_Score"]
+    ask_qty_bias = atm_result["AskQty_Signal"]
+    
+    if near_support and total_score >= 4 and ask_qty_bias == "Bullish":
+        signals.append({
+            "type": "CALL",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": f"Price at support, ATM score: {total_score}, AskQty bias: {ask_qty_bias}"
+        })
+    
+    if near_resistance and total_score <= -4 and ask_qty_bias == "Bearish":
+        signals.append({
+            "type": "PUT",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": f"Price at resistance, ATM score: {total_score}, AskQty bias: {ask_qty_bias}"
+        })
+    
+    return signals
+
+def extract_support_resistance_levels(results):
+    support_levels = []
+    resistance_levels = []
+    
+    for result in results:
+        strike = result["Strike"]
+        sr_level = result["Support_Resistance"]
+        
+        if "Support" in sr_level:
+            support_levels.append(strike)
+        elif "Resistance" in sr_level:
+            resistance_levels.append(strike)
+    
+    return support_levels, resistance_levels
 
 # ========== UI ==========
 def color_bias(val):
@@ -203,9 +259,21 @@ def color_support_resistance(val):
     elif val == "Resistance": return 'background-color: #FFEBEE; color: #C62828;'
     return ''
 
-def show_streamlit_ui(results, underlying, expiry, atm_strike):
+def show_streamlit_ui(results, underlying, expiry, atm_strike, signals):
     st.title("Option Chain Bias Dashboard")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
+    
+    # Display signals
+    if signals:
+        st.subheader("🎯 TRADING SIGNALS")
+        for signal in signals:
+            if signal["type"] == "CALL":
+                st.success(f"🟢 CALL ENTRY SIGNAL - {signal['timestamp']}")
+            else:
+                st.error(f"🔴 PUT ENTRY SIGNAL - {signal['timestamp']}")
+            st.info(f"Reason: {signal['reason']}")
+    else:
+        st.info("No trading signals at the moment")
     
     if not results:
         st.warning("No data to display.")
@@ -219,6 +287,18 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     styled_df = styled_df.applymap(color_score, subset=['Total_Score'])
     
     st.dataframe(styled_df, use_container_width=True)
+    
+    # Display support/resistance levels
+    support_levels, resistance_levels = extract_support_resistance_levels(results)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Support Levels")
+        for level in support_levels:
+            st.write(f"- {level:.2f}")
+    with col2:
+        st.subheader("Resistance Levels")
+        for level in resistance_levels:
+            st.write(f"- {level:.2f}")
 
 # ========== MAIN ==========
 def main():
@@ -230,7 +310,12 @@ def main():
             underlying, df = build_dataframe_from_optionchain(oc_data)
             atm_strike, band = determine_atm_band(df, underlying)
             results = analyze_bias(df, underlying, atm_strike, band)
-            show_streamlit_ui(results, underlying, expiry, atm_strike)
+            
+            # Extract support/resistance levels and generate signals
+            support_levels, resistance_levels = extract_support_resistance_levels(results)
+            signals = generate_signals(results, underlying, support_levels, resistance_levels)
+            
+            show_streamlit_ui(results, underlying, expiry, atm_strike, signals)
         except Exception as e:
             st.error(f"Error: {e}")
 
