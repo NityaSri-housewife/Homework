@@ -2,10 +2,11 @@ import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
+import time
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
-# ================= CONFIG =================
+# ========== CONFIG ==========
 try:
     # Dhan API credentials
     DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
@@ -29,7 +30,7 @@ UNDERLYING_SCRIP = 13
 UNDERLYING_SEG = "IDX_I"
 EXPIRY_OVERRIDE = None
 
-# ================= WEIGHTS =================
+# Weights for bias scoring
 WEIGHTS = {
     "ChgOI_Bias": 1.5,
     "Volume_Bias": 1.2,
@@ -42,7 +43,7 @@ WEIGHTS = {
     "PCR_Bias": 2.0
 }
 
-# ================= HELPERS =================
+# ========== HELPERS ==========
 def delta_volume_bias(price_diff, volume_diff, chg_oi_diff):
     if price_diff > 0 and volume_diff > 0 and chg_oi_diff > 0: return "Bullish"
     elif price_diff < 0 and volume_diff > 0 and chg_oi_diff > 0: return "Bearish"
@@ -88,7 +89,7 @@ def dhan_post(endpoint, payload):
     r.raise_for_status()
     return r.json()
 
-# ================= FETCH DATA =================
+# ========== FETCH DATA ==========
 def fetch_expiry_list(underlying_scrip, underlying_seg):
     payload = {"UnderlyingScrip": underlying_scrip, "UnderlyingSeg": underlying_seg}
     return sorted(dhan_post("optionchain/expirylist", payload).get("data", []))
@@ -97,7 +98,7 @@ def fetch_option_chain(underlying_scrip, underlying_seg, expiry):
     payload = {"UnderlyingScrip": underlying_scrip, "UnderlyingSeg": underlying_seg, "Expiry": expiry}
     return dhan_post("optionchain", payload)
 
-# ================= PROCESS DATA =================
+# ========== PROCESS DATA ==========
 def build_dataframe_from_optionchain(oc_data):
     data = oc_data.get("data", {})
     if not data: raise ValueError("Empty option chain response")
@@ -144,66 +145,51 @@ def determine_atm_band(df, underlying):
     atm_strike = min(strikes, key=lambda x: abs(x - underlying))
     return atm_strike, 2 * step
 
-# ================= BIAS ANALYSIS =================
+# ========== BIAS ANALYSIS ==========
 def analyze_bias(df, underlying, atm_strike, band):
-    df["Zone"] = df["strikePrice"].apply(lambda x: "ATM" if x == atm_strike else ("ITM" if x < underlying else "OTM"))
+    focus = df[(df["strikePrice"] >= atm_strike - band) & (df["strikePrice"] <= atm_strike + band)].copy()
+    focus["Zone"] = focus["strikePrice"].apply(lambda x: "ATM" if x == atm_strike else ("ITM" if x < underlying else "OTM"))
     results = []
-
-    for _, row in df.iterrows():
+    for _, row in focus.iterrows():
         ce_pressure = row.get('bidQty_CE', 0) - row.get('askQty_CE', 0)
         pe_pressure = row.get('bidQty_PE', 0) - row.get('askQty_PE', 0)
         pcr_oi = row.get('PCR_OI', 0)
         pcr_level, zone_width = determine_pcr_level(pcr_oi)
         zone_calculation = calculate_zone_width(row['strikePrice'], zone_width)
-
         biases = {
             "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
             "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
             "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) > row.get('Gamma_PE', 0) else "Bearish",
-            "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > 1.2 * row.get('askQty_CE', 0) else "Bearish",
-            "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > 1.2 * row.get('bidQty_CE', 0) else "Bullish",
+            "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
+            "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
             "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "Bearish",
-            "DVP_Bias": delta_volume_bias(
-                row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
-                row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
-                row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
-            ),
+            "DVP_Bias": delta_volume_bias(row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
+                                          row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
+                                          row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)),
             "PressureBias": "Bullish" if pe_pressure > ce_pressure else "Bearish",
             "PCR_Bias": "Bullish" if pcr_oi > 1 else "Bearish"
         }
-
         total_score = calculate_bias_score(biases)
-
-        row_result = {
+        results.append({
             "Strike": row['strikePrice'],
             "Zone": row['Zone'],
             "ChgOI_Bias": biases["ChgOI_Bias"],
-            "Volume_Bias": biases["Volume_Bias"],
-            "Gamma_Bias": biases["Gamma_Bias"],
             "AskQty_Bias": biases["AskQty_Bias"],
-            "BidQty_Bias": biases["BidQty_Bias"],
-            "IV_Bias": biases["IV_Bias"],
-            "DVP_Bias": biases["DVP_Bias"],
-            "PressureBias": biases["PressureBias"],
-            "PCR_Bias": biases["PCR_Bias"],
-            "PCR_Value": pcr_oi,
+            "PCR": pcr_oi,
             "Support_Resistance": pcr_level,
             "Zone_Width": zone_calculation,
             "Total_Score": total_score
-        }
-
-        results.append(row_result)
-
+        })
     return results
 
-# ================= TELEGRAM =================
+# ========== TELEGRAM ==========
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try: requests.post(url, json=payload, timeout=5)
     except: pass
 
-# ================= SUPABASE RECORD =================
+# ========== SUPABASE RECORD ==========
 def record_signal_db(strike, signal_type, entry_price, exit_price=None, status="open"):
     supabase.table("option_signals").insert({
         "timestamp": datetime.utcnow().isoformat(),
@@ -214,7 +200,7 @@ def record_signal_db(strike, signal_type, entry_price, exit_price=None, status="
         "status": status
     }).execute()
 
-# ================= SIGNALS =================
+# ========== SIGNAL GENERATION & EXIT ==========
 def process_signals(results, underlying_price):
     signals = []
     open_signals = supabase.table("option_signals").select("*").eq("status","open").execute().data
@@ -250,34 +236,32 @@ def process_signals(results, underlying_price):
                 supabase.table("option_signals").update({"exit_price":underlying_price,"status":"closed"}).eq("id",s["id"]).execute()
     return signals
 
-# ================= STREAMLIT UI =================
+# ========== STREAMLIT UI ==========
 def show_streamlit_ui(results, underlying, expiry, atm_strike):
     st.title("Option Chain Bias Dashboard")
+    # IST time
     ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
     st.subheader(f"IST Time: {ist_time.strftime('%Y-%m-%d %H:%M:%S')}")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
-
-    if not results:
-        st.warning("No data to display.")
-        return
-
+    if not results: st.warning("No data to display."); return
     df_display = pd.DataFrame(results)
     st.dataframe(df_display)
-
     signals = process_signals(results, underlying)
-    if signals:
-        st.subheader("Entry Signals")
-        st.table(pd.DataFrame(signals))
-    else:
-        st.info("No entry signals currently.")
+    if signals: st.subheader("Entry Signals"); st.table(pd.DataFrame(signals))
+    else: st.info("No entry signals currently.")
 
-# ================= MAIN =================
+# ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
-
-    # Auto-refresh safely every 30 seconds
-    from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=30_000, key="option_chain_refresh")
+    
+    # Auto-refresh every 30 seconds using time.sleep() and st.rerun()
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = time.time()
+    
+    current_time = time.time()
+    if current_time - st.session_state.last_refresh >= 30:
+        st.session_state.last_refresh = current_time
+        st.rerun()
 
     with st.spinner("Fetching option chain data..."):
         try:
@@ -286,14 +270,8 @@ def main():
             underlying, df = build_dataframe_from_optionchain(oc_data)
             atm_strike, band = determine_atm_band(df, underlying)
             results = analyze_bias(df, underlying, atm_strike, band)
-
-            # Debug info
-            st.write(f"Underlying: {underlying}, Expiry: {expiry}, ATM: {atm_strike}")
-            st.write(f"Option chain rows: {len(df)}")
-
             show_streamlit_ui(results, underlying, expiry, atm_strike)
-        except Exception as e:
-            st.error(f"Error: {e}")
+        except Exception as e: st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
