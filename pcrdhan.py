@@ -468,6 +468,89 @@ def get_support_resistance_zones(df, spot):
 
     return support_zone, resistance_zone
 
+def expiry_bias_score(row):
+    score = 0
+
+    if row.get('changeinOpenInterest_CE', 0) > 0 and row.get('lastPrice_CE', 0) > row.get('previousClose_CE', 0):
+        score += 1
+    if row.get('changeinOpenInterest_PE', 0) > 0 and row.get('lastPrice_PE', 0) > row.get('previousClose_PE', 0):
+        score -= 1
+    if row.get('changeinOpenInterest_CE', 0) > 0 and row.get('lastPrice_CE', 0) < row.get('previousClose_CE', 0):
+        score -= 1
+    if row.get('changeinOpenInterest_PE', 0) > 0 and row.get('lastPrice_PE', 0) < row.get('previousClose_PE', 0):
+        score += 1
+
+    if 'bidQty_CE' in row and 'bidQty_PE' in row:
+        if row.get('bidQty_CE', 0) > row.get('bidQty_PE', 0) * 1.5:
+            score += 1
+        if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) * 1.5:
+            score -= 1
+
+    if row.get('totalTradedVolume_CE', 0) > 2 * row.get('openInterest_CE', 1):
+        score -= 0.5
+    if row.get('totalTradedVolume_PE', 0) > 2 * row.get('openInterest_PE', 1):
+        score += 0.5
+
+    if 'underlyingValue' in row:
+        if abs(row.get('lastPrice_CE', 0) - row.get('underlyingValue', 0)) < abs(row.get('lastPrice_PE', 0) - row.get('underlyingValue', 0)):
+            score += 0.5
+        else:
+            score -= 0.5
+
+    return score
+
+def expiry_entry_signal(df, support_levels, resistance_levels, score_threshold=1.5):
+    entries = []
+    for _, row in df.iterrows():
+        strike = row.get('strikePrice', 0)
+        score = expiry_bias_score(row)
+
+        if score >= score_threshold and strike in support_levels:
+            entries.append({
+                'type': 'BUY CALL',
+                'strike': strike,
+                'score': score,
+                'ltp': row.get('lastPrice_CE', 0),
+                'reason': 'Bullish score + support zone'
+            })
+
+        if score <= -score_threshold and strike in resistance_levels:
+            entries.append({
+                'type': 'BUY PUT',
+                'strike': strike,
+                'score': score,
+                'ltp': row.get('lastPrice_PE', 0),
+                'reason': 'Bearish score + resistance zone'
+            })
+
+    return entries
+
+def display_enhanced_trade_log():
+    # Get trade log from Supabase
+    trade_data = get_trade_log()
+    if not trade_data:
+        st.info("No trades logged yet")
+        return
+    
+    st.markdown("### 📜 Enhanced Trade Log")
+    df_trades = pd.DataFrame(trade_data)
+    
+    # Rename columns for display
+    df_trades.rename(columns={
+        'option_type': 'Type',
+        'strike': 'Strike',
+        'entry_price': 'LTP',
+        'target_price': 'Target',
+        'stop_loss': 'SL',
+        'pcr': 'PCR',
+        'pcr_signal': 'PCR_Signal',
+        'market_bias': 'Market_Bias',
+        'target_hit': 'TargetHit',
+        'sl_hit': 'SLHit',
+        'exit_price': 'Exit_Price',
+        'exit_time': 'Exit_Time'
+    }, inplace=True)
+    
     # Calculate current price and P&L if needed
     if 'Current_Price' not in df_trades.columns:
         df_trades['Current_Price'] = df_trades['LTP'] * np.random.uniform(0.8, 1.3, len(df_trades))
@@ -959,7 +1042,7 @@ def analyze():
         
         if is_expiry_day:
             st.info("""
-
+            
         # Non-expiry day processing continues...
         bias_results, total_score = [], 0
         for _, row in df.iterrows():
