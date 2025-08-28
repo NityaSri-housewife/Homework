@@ -33,11 +33,15 @@ def calculate_pcr(pe_oi, ce_oi):
     return pe_oi / ce_oi if ce_oi != 0 else float('inf')
 
 def determine_pcr_level(pcr_value):
-    if pcr_value >= PCR_STRONG_SUPPORT: return "Strong Support"
-    elif pcr_value >= PCR_SUPPORT: return "Support"
-    elif pcr_value >= PCR_NEUTRAL_LOW: return "Neutral"
-    elif pcr_value >= PCR_RESISTANCE: return "Resistance"
-    return "Strong Resistance"
+    if pcr_value >= 3: return "Strong Support", "Strike price to +20"
+    elif pcr_value >= 2: return "Strong Support", "Strike price to +15"
+    elif pcr_value >= 1.5: return "Support", "Strike price to -10"
+    elif pcr_value >= 1.2: return "Support", "Strike price to -20"
+    elif pcr_value >= 0.7: return "Neutral", "0"
+    elif pcr_value >= 0.5: return "Resistance", "Strike price to +20"
+    elif pcr_value >= 0.4: return "Resistance", "Strike price to +10"
+    elif pcr_value >= 0.3: return "Strong Resistance", "Strike price to -15"
+    else: return "Strong Resistance", "Strike price to -20"
 
 def dhan_post(endpoint, payload):
     url = f"https://api.dhan.co/v2/{endpoint}"
@@ -125,6 +129,7 @@ def analyze_bias(df, underlying, atm_strike, band):
         ce_pressure = row.get('bidQty_CE', 0) - row.get('askQty_CE', 0)
         pe_pressure = row.get('bidQty_PE', 0) - row.get('askQty_PE', 0)
         pcr_oi = row.get('PCR_OI', 0)
+        pcr_level, zone_width = determine_pcr_level(pcr_oi)
         
         results.append({
             "Strike": row['strikePrice'],
@@ -141,7 +146,8 @@ def analyze_bias(df, underlying, atm_strike, band):
                 row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
                 row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)),
             "PCR": pcr_oi,
-            "Support_Resistance": determine_pcr_level(pcr_oi),
+            "Support_Resistance": pcr_level,
+            "Zone_Width": zone_width,
             "PressureBias": "Bullish" if pe_pressure > ce_pressure else "Bearish"
         })
     
