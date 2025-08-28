@@ -1,6 +1,6 @@
 # ================================
 # DhanHQ Option Chain Bias Dashboard (Streamlit)
-# With PCR, Support and Resistance columns
+# Simplified with PCR and Support/Resistance
 # ================================
 
 import requests
@@ -148,8 +148,6 @@ def build_dataframe_from_optionchain(oc_data: dict):
 
         # Calculate PCR
         pcr_oi = calculate_pcr(pe_oi, ce_oi)
-        pcr_volume = calculate_pcr(pe_vol, ce_vol)
-        pcr_chg_oi = calculate_pcr(pe_chg_oi, ce_chg_oi) if ce_chg_oi != 0 else 0
 
         rows.append({
             "strikePrice": strike,
@@ -170,8 +168,6 @@ def build_dataframe_from_optionchain(oc_data: dict):
             "impliedVolatility_CE": ce_iv,
             "impliedVolatility_PE": pe_iv,
             "PCR_OI": pcr_oi,
-            "PCR_Volume": pcr_volume,
-            "PCR_ChgOI": pcr_chg_oi
         })
 
     df = pd.DataFrame(rows)
@@ -218,36 +214,19 @@ def analyze_bias(df, underlying, atm_strike, band):
             "Strike": row['strikePrice'],
             "Zone": row['Zone'],
             "Level": row['Level'],
-            "ChgOI_CE": row.get('changeinOpenInterest_CE', 0),
-            "ChgOI_PE": row.get('changeinOpenInterest_PE', 0),
             "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
-            "Volume_CE": row.get('totalTradedVolume_CE', 0),
-            "Volume_PE": row.get('totalTradedVolume_PE', 0),
             "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
-            "Gamma_CE": row.get('Gamma_CE', 0),
-            "Gamma_PE": row.get('Gamma_PE', 0),
             "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) > row.get('Gamma_PE', 0) else "Bearish",
-            "AskQty_CE": row.get('askQty_CE', 0),
-            "AskQty_PE": row.get('askQty_PE', 0),
             "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > row.get('askQty_CE', 0) else "Bearish",
-            "BidQty_CE": row.get('bidQty_CE', 0),
-            "BidQty_PE": row.get('bidQty_PE', 0),
             "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > row.get('bidQty_CE', 0) else "Bullish",
-            "IV_CE": row.get('impliedVolatility_CE', 0),
-            "IV_PE": row.get('impliedVolatility_PE', 0),
             "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "Bearish",
-            "LTP_CE": row.get('lastPrice_CE', 0),
-            "LTP_PE": row.get('lastPrice_PE', 0),
-            "OI_CE": row.get('openInterest_CE', 0),
-            "OI_PE": row.get('openInterest_PE', 0),
-            "PCR_OI": pcr_oi,
-            "PCR_Level": pcr_level,
             "DVP_Bias": delta_volume_bias(
                 row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
                 row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
                 row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
             ),
-            "BidAskPressure": bid_ask_pressure,
+            "PCR": pcr_oi,
+            "Support_Resistance": pcr_level,
             "PressureBias": pressure_bias
         }
         
@@ -257,7 +236,7 @@ def analyze_bias(df, underlying, atm_strike, band):
 
 # ========== STREAMLIT UI ==========
 def show_streamlit_ui(results, underlying, expiry, atm_strike):
-    st.title("Option Chain Bias Dashboard with PCR Analysis")
+    st.title("Option Chain Bias Dashboard")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
     
     if not results:
@@ -275,7 +254,7 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
             return 'background-color: #FFEBEE; color: #C62828; font-weight: bold'
         return ''
     
-    def color_pcr_level(val):
+    def color_support_resistance(val):
         if val == "Strong Support":
             return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold'
         elif val == "Support":
@@ -286,90 +265,16 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
             return 'background-color: #FFEBEE; color: #C62828;'
         return ''
     
-    # Apply styling to bias columns
+    # Apply styling
     bias_columns = [col for col in df_display.columns if 'Bias' in col]
     styled_df = df_display.style.applymap(color_bias, subset=bias_columns)
-    styled_df = styled_df.applymap(color_pcr_level, subset=['PCR_Level'])
+    styled_df = styled_df.applymap(color_support_resistance, subset=['Support_Resistance'])
     
     st.dataframe(styled_df, use_container_width=True)
-    
-    # Add expanders for detailed data views
-    with st.expander("View PCR Analysis Explanation"):
-        st.markdown("""
-        ### PCR `
-        """)
-    
-    # Summary metrics
-    st.subheader("Summary")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        bull_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v == 'Bullish') > 4)
-        st.metric("Strong Bullish Signals", bull_count)
-    
-    with col2:
-        bear_count = sum(1 for r in results if sum(1 for k,v in r.items() if 'Bias' in k and v == 'Bearish') > 4)
-        st.metric("Strong Bearish Signals", bear_count)
-    
-    with col3:
-        support_count = sum(1 for r in results if r['PCR_Level'] in ['Support', 'Strong Support'])
-        st.metric("Support Levels", support_count)
-    
-    with col4:
-        resistance_count = sum(1 for r in results if r['PCR_Level'] in ['Resistance', 'Strong Resistance'])
-        st.metric("Resistance Levels", resistance_count)
-    
-    # PCR Analysis
-    st.subheader("PCR Distribution")
-    pcr_levels = {}
-    for r in results:
-        level = r['PCR_Level']
-        if level not in pcr_levels:
-            pcr_levels[level] = 0
-        pcr_levels[level] += 1
-    
-    if pcr_levels:
-        chart_data = pd.DataFrame({
-            'PCR Level': list(pcr_levels.keys()),
-            'Count': list(pcr_levels.values())
-        })
-        st.bar_chart(chart_data.set_index('PCR Level'))
-    
-    # Key support and resistance levels
-    st.subheader("Key Levels")
-    support_levels = [r for r in results if r['PCR_Level'] in ['Support', 'Strong Support']]
-    resistance_levels = [r for r in results if r['PCR_Level'] in ['Resistance', 'Strong Resistance']]
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Support Levels**")
-        if support_levels:
-            for level in support_levels:
-                st.write(f"{level['Strike']} - {level['PCR_Level']} (PCR: {level['PCR_OI']:.2f})")
-        else:
-            st.write("No strong support levels identified")
-    
-    with col2:
-        st.write("**Resistance Levels**")
-        if resistance_levels:
-            for level in resistance_levels:
-                st.write(f"{level['Strike']} - {level['PCR_Level']} (PCR: {level['PCR_OI']:.2f})")
-        else:
-            st.write("No strong resistance levels identified")
 
 # ========== MAIN ==========
 def main():
-    st.set_page_config(page_title="Option Chain Bias with PCR", layout="wide")
-    
-    # PCR configuration
-    st.sidebar.header("PCR Configuration")
-    global PCR_STRONG_SUPPORT, PCR_SUPPORT, PCR_NEUTRAL_LOW, PCR_RESISTANCE, PCR_STRONG_RESISTANCE
-    
-    PCR_STRONG_SUPPORT = st.sidebar.slider("Strong Support PCR", 1.0, 3.0, 1.5, 0.1)
-    PCR_SUPPORT = st.sidebar.slider("Support PCR", 0.8, 2.0, 1.2, 0.1)
-    PCR_RESISTANCE = st.sidebar.slider("Resistance PCR", 0.3, 1.2, 0.8, 0.1)
-    PCR_STRONG_RESISTANCE = st.sidebar.slider("Strong Resistance PCR", 0.1, 1.0, 0.5, 0.1)
+    st.set_page_config(page_title="Option Chain Bias", layout="wide")
     
     with st.spinner("Fetching option chain data..."):
         try:
