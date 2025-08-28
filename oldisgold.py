@@ -156,25 +156,28 @@ def analyze_bias(df, underlying, atm_strike, band):
         pcr_oi = row.get('PCR_OI', 0)
         pcr_level, zone_width = determine_pcr_level(pcr_oi)
         zone_calculation = calculate_zone_width(row['strikePrice'], zone_width)
+
         biases = {
             "ChgOI_Bias": "Bullish" if row.get('changeinOpenInterest_CE', 0) < row.get('changeinOpenInterest_PE', 0) else "Bearish",
             "Volume_Bias": "Bullish" if row.get('totalTradedVolume_CE', 0) < row.get('totalTradedVolume_PE', 0) else "Bearish",
             "Gamma_Bias": "Bullish" if row.get('Gamma_CE', 0) > row.get('Gamma_PE', 0) else "Bearish",
             "AskQty_Bias": "Bullish" if row.get('askQty_PE', 0) > 1.2 * row.get('askQty_CE', 0) else "Bearish",
-"BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > 1.2 * row.get('bidQty_CE', 0) else "Bullish",
+            "BidQty_Bias": "Bearish" if row.get('bidQty_PE', 0) > 1.2 * row.get('bidQty_CE', 0) else "Bullish",
             "IV_Bias": "Bullish" if row.get('impliedVolatility_CE', 0) < row.get('impliedVolatility_PE', 0) else "Bearish",
-            "DVP_Bias": delta_volume_bias(row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
-                                          row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
-                                          row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)),
+            "DVP_Bias": delta_volume_bias(
+                row.get('lastPrice_CE', 0) - row.get('lastPrice_PE', 0),
+                row.get('totalTradedVolume_CE', 0) - row.get('totalTradedVolume_PE', 0),
+                row.get('changeinOpenInterest_CE', 0) - row.get('changeinOpenInterest_PE', 0)
+            ),
             "PressureBias": "Bullish" if pe_pressure > ce_pressure else "Bearish",
             "PCR_Bias": "Bullish" if pcr_oi > 1 else "Bearish"
         }
+
         total_score = calculate_bias_score(biases)
         results.append({
             "Strike": row['strikePrice'],
             "Zone": row['Zone'],
-            "ChgOI_Bias": biases["ChgOI_Bias"],
-            "AskQty_Bias": biases["AskQty_Bias"],
+            **biases,  # include all individual bias columns
             "PCR": pcr_oi,
             "Support_Resistance": pcr_level,
             "Zone_Width": zone_calculation,
@@ -239,39 +242,3 @@ def process_signals(results, underlying_price):
 # ========== STREAMLIT UI ==========
 def show_streamlit_ui(results, underlying, expiry, atm_strike):
     st.title("Option Chain Bias Dashboard")
-    # IST time
-    ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
-    st.subheader(f"IST Time: {ist_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
-    if not results: st.warning("No data to display."); return
-    df_display = pd.DataFrame(results)
-    st.dataframe(df_display)
-    signals = process_signals(results, underlying)
-    if signals: st.subheader("Entry Signals"); st.table(pd.DataFrame(signals))
-    else: st.info("No entry signals currently.")
-
-# ========== MAIN ==========
-def main():
-    st.set_page_config(page_title="Option Chain Bias", layout="wide")
-    
-    # Auto-refresh every 30 seconds using time.sleep() and st.rerun()
-    if 'last_refresh' not in st.session_state:
-        st.session_state.last_refresh = time.time()
-    
-    current_time = time.time()
-    if current_time - st.session_state.last_refresh >= 30:
-        st.session_state.last_refresh = current_time
-        st.rerun()
-
-    with st.spinner("Fetching option chain data..."):
-        try:
-            expiry = EXPIRY_OVERRIDE or fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)[0]
-            oc_data = fetch_option_chain(UNDERLYING_SCRIP, UNDERLYING_SEG, expiry)
-            underlying, df = build_dataframe_from_optionchain(oc_data)
-            atm_strike, band = determine_atm_band(df, underlying)
-            results = analyze_bias(df, underlying, atm_strike, band)
-            show_streamlit_ui(results, underlying, expiry, atm_strike)
-        except Exception as e: st.error(f"Error: {e}")
-
-if __name__ == "__main__":
-    main()
