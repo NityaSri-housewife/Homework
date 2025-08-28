@@ -148,6 +148,18 @@ def analyze_bias(df, underlying, atm_strike, band):
     return results
 
 # ========== UI ==========
+def color_bias(val):
+    if val == "Bullish": return 'background-color: #E8F5E9; color: #2E7D32; font-weight: bold'
+    elif val == "Bearish": return 'background-color: #FFEBEE; color: #C62828; font-weight: bold'
+    return ''
+
+def color_support_resistance(val):
+    if val == "Strong Support": return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold'
+    elif val == "Support": return 'background-color: #E8F5E9; color: #2E7D32;'
+    elif val == "Strong Resistance": return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold'
+    elif val == "Resistance": return 'background-color: #FFEBEE; color: #C62828;'
+    return ''
+
 def show_streamlit_ui(results, underlying, expiry, atm_strike):
     st.title("Option Chain Bias Dashboard")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
@@ -157,7 +169,13 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
         return
     
     df_display = pd.DataFrame(results)
-    st.dataframe(df_display, use_container_width=True)
+    
+    # Apply styling
+    bias_columns = [col for col in df_display.columns if 'Bias' in col]
+    styled_df = df_display.style.applymap(color_bias, subset=bias_columns)
+    styled_df = styled_df.applymap(color_support_resistance, subset=['Support_Resistance'])
+    
+    st.dataframe(styled_df, use_container_width=True)
 
 # ========== MAIN ==========
 def main():
