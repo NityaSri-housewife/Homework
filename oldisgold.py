@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
+import time
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
@@ -252,8 +253,15 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
 # ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
-    # Auto-refresh every 30 seconds
-    st.experimental_autorefresh(interval=30 * 1000, key="auto_refresh")
+    
+    # Auto-refresh every 30 seconds using time.sleep() and st.rerun()
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = time.time()
+    
+    current_time = time.time()
+    if current_time - st.session_state.last_refresh >= 30:
+        st.session_state.last_refresh = current_time
+        st.rerun()
 
     with st.spinner("Fetching option chain data..."):
         try:
