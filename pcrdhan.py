@@ -597,7 +597,8 @@ def plot_price_with_sr():
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=support_zone[0], y1=support_zone[1],
-            fillcolor="rg�0,255,0,0.08)", line=dict(width=0),
+            fillcolor="rgba(0,255,0,0.08)",  # FIXED: Changed from 'rg�0,255,0,0.08)' to 'rgba(0,255,0,0.08)'
+            line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
@@ -621,7 +622,8 @@ def plot_price_with_sr():
             xref="paper", yref="y",
             x0=0, x1=1,
             y0=resistance_zone[0], y1=resistance_zone[1],
-            fillcolor="rgba(255,0,0,0.08)", line=dict(width=0),
+            fillcolor="rgba(255,0,0,0.08)",  # This one is correct
+            line=dict(width=0),
             layer="below"
         )
         fig.add_trace(go.Scatter(
