@@ -233,8 +233,8 @@ def calculate_vob_indicator(df, length1=5):
     
     return vob_zones
 
-def create_candlestick_chart(df, timeframe, vob_sensitivity=None):
-    """Create TradingView-style candlestick chart"""
+def create_candlestick_chart(df, timeframe, vob_zones=None):
+    """Create TradingView-style candlestick chart with VOB zones"""
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -258,6 +258,56 @@ def create_candlestick_chart(df, timeframe, vob_sensitivity=None):
         row=1, col=1
     )
     
+    # Add VOB zones if provided
+    if vob_zones:
+        for zone in vob_zones:
+            if zone['type'] == 'bullish':
+                # Bullish zone (green)
+                fig.add_shape(
+                    type="rect",
+                    x0=zone['start_time'],
+                    x1=zone['end_time'],
+                    y0=zone['low_level'],
+                    y1=zone['base_level'],
+                    line=dict(width=0),
+                    fillcolor="rgba(0, 255, 0, 0.2)",
+                    row=1, col=1
+                )
+                # Add horizontal line at base level
+                fig.add_trace(
+                    go.Scatter(
+                        x=[zone['start_time'], zone['end_time']],
+                        y=[zone['base_level'], zone['base_level']],
+                        mode='lines',
+                        line=dict(color='green', width=2, dash='dash'),
+                        name='VOB Base'
+                    ),
+                    row=1, col=1
+                )
+            else:
+                # Bearish zone (red)
+                fig.add_shape(
+                    type="rect",
+                    x0=zone['start_time'],
+                    x1=zone['end_time'],
+                    y0=zone['base_level'],
+                    y1=zone['high_level'],
+                    line=dict(width=0),
+                    fillcolor="rgba(255, 0, 0, 0.2)",
+                    row=1, col=1
+                )
+                # Add horizontal line at base level
+                fig.add_trace(
+                    go.Scatter(
+                        x=[zone['start_time'], zone['end_time']],
+                        y=[zone['base_level'], zone['base_level']],
+                        mode='lines',
+                        line=dict(color='red', width=2, dash='dash'),
+                        name='VOB Base'
+                    ),
+                    row=1, col=1
+                )
+    
     # Volume chart
     colors = ['#26a69a' if close >= open else '#ef5350' 
               for close, open in zip(df['close'], df['open'])]
@@ -275,7 +325,7 @@ def create_candlestick_chart(df, timeframe, vob_sensitivity=None):
     
     # Update layout
     fig.update_layout(
-        title=f"Nifty 50 - {timeframe} Min Chart",
+        title=f"Nifty 50 - {timeframe} Min Chart" + (" with VOB Zones" if vob_zones else ""),
         xaxis_title="Time",
         yaxis_title="Price",
         template="plotly_dark",
@@ -392,8 +442,14 @@ def main():
                     'volume': 'sum'
                 }).dropna().reset_index()
             
+            # Calculate VOB zones if enabled
+            vob_zones = None
+            if show_vob:
+                vob_zones = calculate_vob_indicator(df, vob_sensitivity)
+                st.sidebar.info(f"Found {len(vob_zones)} VOB zones")
+            
             # Create and display chart
-            fig = create_candlestick_chart(df, selected_timeframe.split()[0])
+            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
             st.plotly_chart(fig, use_container_width=True)
             
             # Display stats
