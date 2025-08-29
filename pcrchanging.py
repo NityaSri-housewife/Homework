@@ -302,7 +302,7 @@ def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
     
     # Auto-refresh every 20 seconds
-    st_autorefresh(interval=30 * 1000, key="data_refresh")
+    st_autorefresh(interval=27 * 1000, key="data_refresh")
 
     with st.spinner("Fetching option chain data..."):
         try:
