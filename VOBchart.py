@@ -1,172 +1,158 @@
-import streamlit as st
+# VOBchart.py
+
+import requests
 import pandas as pd
 import numpy as np
-import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
-from supabase import create_client
-import telegram
-import streamlit.components.v1 as components
+import streamlit as st
 import time
+from datetime import datetime, timedelta
+from supabase import create_client, Client
 
-# ================= CONFIG =================
-st.set_page_config(page_title="VOB 3-min Chart", layout="wide")
+# ========= CONFIG =========
+try:
+    # Load secrets from .streamlit/secrets.toml
+    DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
+    DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
 
-# ---------- Load credentials ----------
-DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
-DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
+    SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
 
-SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
+    TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
+    TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
 
-TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
+except Exception as e:
+    st.error(f"Error loading secrets: {e}")
+    st.stop()
 
-# ---------- Script settings ----------
-SYMBOL = "NSE:NIFTY"
-INTERVAL = "3m"
-VOB_LENGTH = 5
-REFRESH_SECONDS = 180
+# Supabase init
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
-
-# ================= FUNCTIONS =================
-
-@st.cache_data(ttl=REFRESH_SECONDS)
-def fetch_dhan_ohlc(symbol, interval, limit=500):
-    url = f"https://openapi.dhan.co/v1/market/candle?symbol={symbol}&interval={interval}&count={limit}"
-    headers = {"Authorization": f"Bearer {DHAN_ACCESS_TOKEN}"}
-    
-    # Retry setup
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
+# ========= DATA FETCH =========
+def fetch_dhan_intraday(securityId, from_date, to_date, interval=1):
+    """Fetch intraday data from Dhan API v2"""
+    url = "https://api.dhan.co/v2/charts/intraday"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "access-token": DHAN_ACCESS_TOKEN
+    }
+    payload = {
+        "securityId": securityId,
+        "exchangeSegment": "NSE_EQ",
+        "instrument": "EQUITY",
+        "interval": interval,
+        "oi": False,
+        "fromDate": from_date,
+        "toDate": to_date
+    }
     try:
-        res = session.get(url, headers=headers, timeout=10)
+        res = requests.post(url, json=payload, timeout=10)
         res.raise_for_status()
         data = res.json()
-        if "data" not in data:
-            st.warning(f"No data returned from Dhan API: {data}")
+
+        if "timestamp" not in data:
+            st.error(f"Invalid response: {data}")
             return pd.DataFrame()
-        df = pd.DataFrame(data["data"])
-        df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("time", inplace=True)
-        return df[["open", "high", "low", "close"]]
-    except requests.exceptions.RequestException as e:
+
+        df = pd.DataFrame({
+            'open': data['open'],
+            'high': data['high'],
+            'low': data['low'],
+            'close': data['close'],
+            'volume': data['volume'],
+            'time': pd.to_datetime(data['timestamp'], unit='s')
+        })
+        df.set_index('time', inplace=True)
+        return df
+
+    except Exception as e:
         st.error(f"Error connecting to Dhan API: {e}")
-        # Fallback: return last cached data if available, else empty
         return pd.DataFrame()
 
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
-
-def atr(df, period=14):
-    df['hl'] = df['high'] - df['low']
-    df['hc'] = abs(df['high'] - df['close'].shift())
-    df['lc'] = abs(df['low'] - df['close'].shift())
-    tr = df[['hl','hc','lc']].max(axis=1)
-    return tr.rolling(period).mean()
-
-def compute_vob(df, length=VOB_LENGTH):
-    df['ema1'] = ema(df['close'], length)
-    df['ema2'] = ema(df['close'], length + 13)
-    df['crossUp'] = (df['ema1'] > df['ema2']) & (df['ema1'].shift() <= df['ema2'].shift())
-    df['crossDn'] = (df['ema1'] < df['ema2']) & (df['ema1'].shift() >= df['ema2'].shift())
-    df['lowest'] = df['low'].rolling(length + 13).min()
-    df['highest'] = df['high'].rolling(length + 13).max()
-    df['atr'] = atr(df, 200) * 3
-    df['bull_base'] = np.where(df['crossUp'], np.minimum(df['open'], df['close']), np.nan)
-    df['bear_base'] = np.where(df['crossDn'], np.maximum(df['open'], df['close']), np.nan)
+# ========= INDICATORS =========
+def add_indicators(df):
+    if df.empty:
+        return df
+    df['EMA20'] = df['close'].ewm(span=20).mean()
+    df['EMA50'] = df['close'].ewm(span=50).mean()
+    df['ATR'] = (df['high'] - df['low']).rolling(14).mean()
     return df
 
-# ---------------- Supabase ----------------
-def save_to_supabase(df):
-    if df.empty:
-        return
-    records = df.reset_index().to_dict(orient='records')
-    supabase.table('vob_data').upsert(records).execute()
+def resample_to_3m(df_1m):
+    """Convert 1-min to 3-min candles"""
+    if df_1m.empty:
+        return df_1m
+    df = df_1m.resample('3T').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    return df
 
-# ---------------- Telegram ----------------
-def send_telegram_signal(msg, timestamp):
-    if 'last_alert_time' not in st.session_state:
-        st.session_state['last_alert_time'] = None
-    if st.session_state['last_alert_time'] != timestamp:
-        try:
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-            st.session_state['last_alert_time'] = timestamp
-        except:
-            pass
+# ========= SIGNAL LOGIC =========
+def check_signals(df):
+    if df.empty or len(df) < 2:
+        return None
 
-# ================= STREAMLIT DISPLAY =================
-st.title("VOB Indicator 3-min Chart")
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-# Auto-refresh meta tag
-st_autorefresh_placeholder = st.empty()
-st_autorefresh_placeholder.markdown(
-    f"<meta http-equiv='refresh' content='{REFRESH_SECONDS}'>", unsafe_allow_html=True
-)
+    signal = None
+    if last['EMA20'] > last['EMA50'] and prev['EMA20'] <= prev['EMA50']:
+        signal = "BUY"
+    elif last['EMA20'] < last['EMA50'] and prev['EMA20'] >= prev['EMA50']:
+        signal = "SELL"
+    return signal
+
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        st.warning(f"Telegram send failed: {e}")
+
+# ========= MAIN APP =========
+st.title("📈 VOB Chart with Dhan API v2")
+
+SECURITY_ID = "1333"  # Replace with your instrument securityId
+TODAY = datetime.now().strftime("%Y-%m-%d")
+from_date = f"{TODAY} 09:15:00"
+to_date = f"{TODAY} 15:30:00"
+
+st.sidebar.write("Config")
+refresh_sec = st.sidebar.slider("Refresh seconds", 10, 120, 30)
+
+# Auto refresh
+st_autorefresh = st.empty()
+time.sleep(1)
 
 # Fetch data
-df = fetch_dhan_ohlc(SYMBOL, INTERVAL)
+df_1m = fetch_dhan_intraday(SECURITY_ID, from_date, to_date, interval=1)
+df = resample_to_3m(df_1m)
+df = add_indicators(df)
 
 if not df.empty:
-    df = compute_vob(df)
-    save_to_supabase(df)
+    st.line_chart(df[['close', 'EMA20', 'EMA50']])
 
-    # Signals
-    last = df.iloc[-1]
-    if last['crossUp']:
-        send_telegram_signal(f"BULLISH Signal on {SYMBOL} at {last.name}", last.name)
-        st.success(f"BULLISH Signal at {last.name}")
-    elif last['crossDn']:
-        send_telegram_signal(f"BEARISH Signal on {SYMBOL} at {last.name}", last.name)
-        st.error(f"BEARISH Signal at {last.name}")
+    # Check signals
+    signal = check_signals(df)
+    if signal:
+        msg = f"{datetime.now().strftime('%H:%M:%S')} - Signal: {signal}"
+        st.success(msg)
+        send_telegram(msg)
 
-    st.subheader("Latest 10 Candles")
-    st.dataframe(df.tail(10))
+    # Save to Supabase
+    try:
+        supabase.table("vob_signals").insert({
+            "time": datetime.now().isoformat(),
+            "signal": signal,
+            "last_close": float(df['close'].iloc[-1])
+        }).execute()
+    except Exception as e:
+        st.warning(f"Supabase insert failed: {e}")
 
-    # Chart
-    chart_html = """
-    <div id="chart" style="width: 100%; height: 600px;"></div>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <script>
-    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
-        layout: { backgroundColor: '#1e1e1e', textColor: '#d1d4dc' },
-        rightPriceScale: { borderVisible: false },
-        timeScale: { borderVisible: false }
-    });
-    const candleSeries = chart.addCandlestickSeries();
-    const bullLineSeries = chart.addLineSeries({ color: '#26ba9f', lineWidth: 2 });
-    const bearLineSeries = chart.addLineSeries({ color: '#ba2646', lineWidth: 2 });
-
-    const data = """ + df.reset_index()[["time","open","high","low","close","bull_base","bear_base"]].to_json(orient='records') + """; 
-
-    const candles = data.map(d => ({
-        time: new Date(d.time).getTime()/1000,
-        open: d.open,
-        high: d.high,
-        low: d.low,
-        close: d.close
-    }));
-    candleSeries.setData(candles);
-
-    const bullZones = data.filter(d => d.bull_base!=null).map(d => ({ time: new Date(d.time).getTime()/1000, value: d.bull_base }));
-    const bearZones = data.filter(d => d.bear_base!=null).map(d => ({ time: new Date(d.time).getTime()/1000, value: d.bear_base }));
-
-    bullLineSeries.setData(bullZones);
-    bearLineSeries.setData(bearZones);
-    </script>
-    """
-    components.html(chart_html, height=650, scrolling=True)
-
-# Notes
-st.info("""
-Areas to Improve / Watch:
-1. Streamlit Refresh: st.experimental_rerun or st_autorefresh is smoother than full page reloads.
-2. Caching: @st.cache_data(ttl=REFRESH_SECONDS) reduces API calls.
-3. Telegram alerts: store last alerted candle timestamp to avoid duplicates.
-4. Supabase upsert: batch upsert improves performance.
-5. Fallback: If Dhan API is unreachable, no crash occurs.
-""")
+else:
+    st.warning("No data fetched")
