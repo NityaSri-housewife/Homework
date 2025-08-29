@@ -40,5 +40,6 @@ vaderSentiment>=3.3.2
 streamlit-autorefresh>=0.0.1
 python-dotenv
 schedule
+telebot
 
 python-telegram-bot
