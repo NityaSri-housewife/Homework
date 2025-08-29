@@ -10,12 +10,17 @@ import time
 # ================= CONFIG =================
 st.set_page_config(page_title="VOB 3-min Chart", layout="wide")
 
+# ---------- Load credentials from secrets.toml ----------
 DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
+DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
+
 SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
+
 TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
 
+# ---------- Script settings ----------
 SYMBOL = "NSE:NIFTY"
 INTERVAL = "3m"  # 3-minute candles
 VOB_LENGTH = 5
@@ -26,6 +31,7 @@ bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 # ================= FUNCTIONS =================
 
+# Cache Dhan API response to reduce calls and respect rate limits
 @st.cache_data(ttl=REFRESH_SECONDS)
 def fetch_dhan_ohlc(symbol, interval, limit=500):
     url = f"https://openapi.dhan.co/v1/market/candle?symbol={symbol}&interval={interval}&count={limit}"
@@ -60,12 +66,14 @@ def compute_vob(df, length=VOB_LENGTH):
     return df
 
 # ---------------- Supabase ----------------
+# Batch upsert to improve performance
 def save_to_supabase(df):
     records = df.reset_index().to_dict(orient='records')
     if records:
         supabase.table('vob_data').upsert(records).execute()
 
 # ---------------- Telegram ----------------
+# Avoid duplicate alerts using session state
 def send_telegram_signal(msg, timestamp):
     if 'last_alert_time' not in st.session_state:
         st.session_state['last_alert_time'] = None
@@ -79,7 +87,7 @@ def send_telegram_signal(msg, timestamp):
 # ================= STREAMLIT DISPLAY =================
 st.title("VOB Indicator 3-min Chart")
 
-# Auto-refresh placeholder using meta refresh
+# Auto-refresh every REFRESH_SECONDS using meta refresh
 st_autorefresh_placeholder = st.empty()
 st_autorefresh_placeholder.markdown(
     f"<meta http-equiv='refresh' content='{REFRESH_SECONDS}'>", unsafe_allow_html=True
