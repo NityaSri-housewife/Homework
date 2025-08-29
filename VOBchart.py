@@ -1,98 +1,75 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import requests
+import time
+from datetime import datetime
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
-import websocket
-import threading
-import json
-from supabase import create_client, Client
 
-# ----------------- Streamlit Secrets -----------------
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# -----------------------
+# Load Secrets
+# -----------------------
 DHAN_TOKEN = st.secrets["DHAN_TOKEN"]
 DHAN_CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
+NIFTY_SPOT_ID = "256265"  # Nifty 50 Spot Security ID
+UPDATE_INTERVAL = 60  # in seconds (change to 120 for 2 min, 180 for 3 min, etc.)
 
-# ----------------- Supabase Client -----------------
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+st.title("Live Nifty Spot Price Candlestick Chart")
 
-# ----------------- User Settings -----------------
-INTERVAL = st.sidebar.selectbox("Candle Interval (minutes)", [1, 2, 3])
-SYMBOL_SEGMENT = "NSE_EQ"
-SYMBOL_ID = "1333"  # Replace with your security ID
+# Initialize empty DataFrame for OHLC
+df = pd.DataFrame(columns=["Time", "Open", "High", "Low", "Close"])
 
-# ----------------- DataFrame to store OHLC -----------------
-df = pd.DataFrame(columns=["timestamp","open","high","low","close","volume"])
+# Initialize chart
+chart = st.plotly_chart(go.Figure(), use_container_width=True)
 
-# ----------------- WebSocket Message Handling -----------------
-def on_message(ws, message):
-    global df
-    data = json.loads(message)
-    if "last_price" in data:
-        price = data["last_price"]
-        timestamp = datetime.now()
-        # Aggregate by interval
-        if df.empty or (timestamp - df["timestamp"].iloc[-1]) >= timedelta(minutes=INTERVAL):
-            df = pd.concat([df, pd.DataFrame([{"timestamp": timestamp,"open": price,"high": price,"low": price,"close": price,"volume": 1}])], ignore_index=True)
-            # Insert into Supabase
-            supabase.table("ohlc_data").insert([{
-                "timestamp": timestamp.isoformat(),
-                "open": price,
-                "high": price,
-                "low": price,
-                "close": price,
-                "volume": 1
-            }]).execute()
-        else:
-            df.iloc[-1]["high"] = max(df.iloc[-1]["high"], price)
-            df.iloc[-1]["low"] = min(df.iloc[-1]["low"], price)
-            df.iloc[-1]["close"] = price
-            df.iloc[-1]["volume"] += 1
-
-def on_error(ws, error):
-    print("WebSocket Error:", error)
-
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket Closed:", close_status_code, close_msg)
-
-def on_open(ws):
-    print("WebSocket Connected")
-    # Subscribe to instrument
-    msg = {
-        "RequestCode": 23,
-        "InstrumentCount": 1,
-        "InstrumentList": [
-            {"ExchangeSegment": SYMBOL_SEGMENT, "SecurityId": SYMBOL_ID}
-        ]
+# Function to fetch Nifty spot price
+def fetch_nifty_spot():
+    url = "https://api.dhan.co/v2/marketfeed/ltp"
+    payload = {"NSE_INDICES": [int(NIFTY_SPOT_ID)]}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "access-token": DHAN_TOKEN,
+        "client-id": DHAN_CLIENT_ID
     }
-    ws.send(json.dumps(msg))
+    try:
+        response = requests.post(url, json=payload, headers=headers).json()
+        price = response["data"]["NSE_INDICES"][NIFTY_SPOT_ID]["last_price"]
+        return price
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return None
 
-# ----------------- Start WebSocket in Thread -----------------
-def run_ws():
-    ws = websocket.WebSocketApp(
-        f"wss://depth-api-feed.dhan.co/twentydepth?token={DHAN_TOKEN}&clientId={DHAN_CLIENT_ID}&authType=2",
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close,
-        on_open=on_open
-    )
-    ws.run_forever()
-
-threading.Thread(target=run_ws, daemon=True).start()
-
-# ----------------- Streamlit Plot -----------------
-st.title("Live Price Action Chart")
-chart_area = st.empty()
-
+# Main loop
 while True:
-    if not df.empty:
+    price = fetch_nifty_spot()
+    if price is not None:
+        now = datetime.now()
+        
+        # If no data yet, initialize first candle
+        if df.empty:
+            df = pd.DataFrame({"Time": [now], "Open": [price], "High": [price], "Low": [price], "Close": [price]})
+        else:
+            # Check if last candle is within current minute
+            last_time = df["Time"].iloc[-1]
+            if (now - last_time).seconds < UPDATE_INTERVAL:
+                # Update current candle
+                df.at[df.index[-1], "High"] = max(df.at[df.index[-1], "High"], price)
+                df.at[df.index[-1], "Low"] = min(df.at[df.index[-1], "Low"], price)
+                df.at[df.index[-1], "Close"] = price
+            else:
+                # Start new candle
+                new_candle = {"Time": now, "Open": price, "High": price, "Low": price, "Close": price}
+                df = pd.concat([df, pd.DataFrame(new_candle, index=[0])], ignore_index=True)
+        
+        # Plot chart
         fig = go.Figure(data=[go.Candlestick(
-            x=df["timestamp"],
-            open=df["open"],
-            high=df["high"],
-            low=df["low"],
-            close=df["close"]
+            x=df["Time"],
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"]
         )])
-        fig.update_layout(xaxis_rangeslider_visible=False, height=600)
-        chart_area.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(xaxis_rangeslider_visible=False, title="Nifty Spot Price")
+        chart.plotly_chart(fig, use_container_width=True)
+    
+    time.sleep(UPDATE_INTERVAL)
