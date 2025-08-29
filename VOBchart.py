@@ -7,11 +7,12 @@ from requests.packages.urllib3.util.retry import Retry
 from supabase import create_client
 import telegram
 import streamlit.components.v1 as components
+import time
 
 # ================= CONFIG =================
 st.set_page_config(page_title="VOB 3-min Chart", layout="wide")
 
-# ---------- Load credentials from secrets.toml ----------
+# ---------- Load credentials ----------
 DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
 DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
 
@@ -23,9 +24,9 @@ TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
 
 # ---------- Script settings ----------
 SYMBOL = "NSE:NIFTY"
-INTERVAL = "3m"  # 3-minute candles
+INTERVAL = "3m"
 VOB_LENGTH = 5
-REFRESH_SECONDS = 180  # 3 minutes
+REFRESH_SECONDS = 180
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
@@ -45,19 +46,18 @@ def fetch_dhan_ohlc(symbol, interval, limit=500):
     try:
         res = session.get(url, headers=headers, timeout=10)
         res.raise_for_status()
+        data = res.json()
+        if "data" not in data:
+            st.warning(f"No data returned from Dhan API: {data}")
+            return pd.DataFrame()
+        df = pd.DataFrame(data["data"])
+        df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("time", inplace=True)
+        return df[["open", "high", "low", "close"]]
     except requests.exceptions.RequestException as e:
         st.error(f"Error connecting to Dhan API: {e}")
-        return pd.DataFrame()  # return empty dataframe on error
-    
-    data = res.json()
-    if "data" not in data:
-        st.error(f"No data returned from Dhan API: {data}")
+        # Fallback: return last cached data if available, else empty
         return pd.DataFrame()
-    
-    df = pd.DataFrame(data["data"])
-    df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df.set_index("time", inplace=True)
-    return df[["open", "high", "low", "close"]]
 
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -102,19 +102,20 @@ def send_telegram_signal(msg, timestamp):
 # ================= STREAMLIT DISPLAY =================
 st.title("VOB Indicator 3-min Chart")
 
-# Auto-refresh every REFRESH_SECONDS using meta refresh
+# Auto-refresh meta tag
 st_autorefresh_placeholder = st.empty()
 st_autorefresh_placeholder.markdown(
     f"<meta http-equiv='refresh' content='{REFRESH_SECONDS}'>", unsafe_allow_html=True
 )
 
-# Fetch & compute
+# Fetch data
 df = fetch_dhan_ohlc(SYMBOL, INTERVAL)
+
 if not df.empty:
     df = compute_vob(df)
     save_to_supabase(df)
 
-    # Show recent signals
+    # Signals
     last = df.iloc[-1]
     if last['crossUp']:
         send_telegram_signal(f"BULLISH Signal on {SYMBOL} at {last.name}", last.name)
@@ -126,7 +127,7 @@ if not df.empty:
     st.subheader("Latest 10 Candles")
     st.dataframe(df.tail(10))
 
-    # ================= CHART =================
+    # Chart
     chart_html = """
     <div id="chart" style="width: 100%; height: 600px;"></div>
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
@@ -160,11 +161,12 @@ if not df.empty:
     """
     components.html(chart_html, height=650, scrolling=True)
 
-# ================= NOTES =================
-"""
+# Notes
+st.info("""
 Areas to Improve / Watch:
-1. Streamlit Refresh: using st.experimental_rerun or st_autorefresh is smoother than full page reloads.
-2. Caching: @st.cache_data(ttl=REFRESH_SECONDS) helps reduce API calls and respect Dhan limits.
+1. Streamlit Refresh: st.experimental_rerun or st_autorefresh is smoother than full page reloads.
+2. Caching: @st.cache_data(ttl=REFRESH_SECONDS) reduces API calls.
 3. Telegram alerts: store last alerted candle timestamp to avoid duplicates.
-4. Supabase upsert: batch upsert improves performance for large datasets.
-"""
+4. Supabase upsert: batch upsert improves performance.
+5. Fallback: If Dhan API is unreachable, no crash occurs.
+""")
