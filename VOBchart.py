@@ -198,7 +198,7 @@ def process_historical_data(data, interval):
     
     return df
 
-def calculate_vob_indicator(df, length1=5):
+def calculate_vob_indicator(df, length1=5, check_only_new=False):
     """Calculate VOB (Volume Order Block) indicator"""
     df = df.copy()
     
@@ -225,6 +225,10 @@ def calculate_vob_indicator(df, length1=5):
     vob_zones = []
     
     for idx in range(len(df)):
+        # If we're only checking for new VOBs, skip old data
+        if check_only_new and idx < len(df) - 1:
+            continue
+            
         if df.iloc[idx]['cross_up']:
             # Find lowest in last length1+13 periods
             start_idx = max(0, idx - (length1 + 13))
@@ -476,6 +480,10 @@ def main():
     
     auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
     
+    # Initialize session state for tracking new VOBs
+    if 'last_vob_check' not in st.session_state:
+        st.session_state.last_vob_check = datetime.now()
+    
     # Main content area
     col1, col2 = st.columns([3, 1])
     
@@ -559,13 +567,17 @@ def main():
             vob_zones = None
             if show_vob and len(df) > 50:  # Need enough data for VOB calculation
                 try:
+                    # First get all VOB zones for display
                     vob_zones = calculate_vob_indicator(df, vob_sensitivity)
                     st.sidebar.info(f"Found {len(vob_zones)} VOB zones")
                     
+                    # Check for new VOBs only in the latest data
+                    new_vob_zones = calculate_vob_indicator(df, vob_sensitivity, check_only_new=True)
+                    
                     # Send Telegram alerts for new VOB formations
-                    if telegram_enabled and telegram_alerts and vob_zones:
+                    if telegram_enabled and telegram_alerts and new_vob_zones:
                         current_price = df.iloc[-1]['close']
-                        for zone in vob_zones:
+                        for zone in new_vob_zones:
                             # Check if we've already sent an alert for this VOB
                             if not data_manager.check_vob_sent(zone['type'], zone['start_time'], zone['base_level']):
                                 if send_telegram_alert(telegram_bot, chat_id, zone, current_price):
@@ -598,6 +610,9 @@ def main():
                 
         else:
             st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
+    
+    # Update last check time
+    st.session_state.last_vob_check = datetime.now()
     
     # Auto refresh functionality
     if auto_refresh:
