@@ -61,7 +61,9 @@ class DataManager:
     def save_to_db(self, df):
         """Save DataFrame to Supabase"""
         try:
-            data = df.to_dict('records')
+            df_copy = df.copy()
+            df_copy['timestamp'] = df_copy['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            data = df_copy.to_dict('records')
             result = self.supabase.table(self.table_name).upsert(data).execute()
             return True
         except Exception as e:
@@ -218,8 +220,11 @@ def main():
                 if data:
                     df = process_historical_data(data, timeframes[selected_timeframe])
                     if not df.empty:
+                        # Store in session state and database
+                        st.session_state.chart_data = df
                         data_manager.save_to_db(df)
                         st.success(f"Fetched {len(df)} candles")
+                        st.rerun()
                     else:
                         st.warning("No data received")
                 else:
@@ -243,10 +248,17 @@ def main():
         # Load and display chart
         df = data_manager.load_from_db(hours_back)
         
+        # Check session state for fresh data
+        if 'chart_data' in st.session_state:
+            df = st.session_state.chart_data
+        
         if not df.empty:
+            # Ensure timestamp is datetime
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
             # Apply timeframe grouping if needed
             if timeframes[selected_timeframe] != "1":
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
                 df.set_index('timestamp', inplace=True)
                 df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
                     'open': 'first',
@@ -261,17 +273,18 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
             
             # Display stats
-            latest = df.iloc[-1]
-            col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
-            
-            with col1_stats:
-                st.metric("Open", f"₹{latest['open']:.2f}")
-            with col2_stats:
-                st.metric("High", f"₹{latest['high']:.2f}")
-            with col3_stats:
-                st.metric("Low", f"₹{latest['low']:.2f}")
-            with col4_stats:
-                st.metric("Close", f"₹{latest['close']:.2f}")
+            if len(df) > 0:
+                latest = df.iloc[-1]
+                col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
+                
+                with col1_stats:
+                    st.metric("Open", f"₹{latest['open']:.2f}")
+                with col2_stats:
+                    st.metric("High", f"₹{latest['high']:.2f}")
+                with col3_stats:
+                    st.metric("Low", f"₹{latest['low']:.2f}")
+                with col4_stats:
+                    st.metric("Close", f"₹{latest['close']:.2f}")
                 
         else:
             st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
