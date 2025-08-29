@@ -305,7 +305,7 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
 # ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
-    st_autorefresh(interval=10 * 1000, key="data_refresh")
+    st_autorefresh(interval=30 * 1000, key="data_refresh")
 
     with st.spinner("Fetching option chain data..."):
         try:
