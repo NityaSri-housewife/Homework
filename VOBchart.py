@@ -103,8 +103,10 @@ def compute_vob(df, length=VOB_LENGTH):
 def save_to_supabase(df):
     if df.empty:
         return
-    records = df.reset_index().to_dict(orient='records')
-    supabase.table('vob_data').upsert(records).execute()
+    records = df.reset_index()
+    # Convert Timestamp to string for JSON serialization
+    records['time'] = records['time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    supabase.table('vob_data').upsert(records.to_dict(orient='records')).execute()
 
 def send_telegram_signal(msg, timestamp):
     if 'last_alert_time' not in st.session_state:
