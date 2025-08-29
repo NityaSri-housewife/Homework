@@ -62,7 +62,7 @@ def determine_pcr_level(pcr_value):
     elif pcr_value >= 1.2: return "Support", "Strike price -20"
     elif 0.71 <= pcr_value <= 1.19: return "Neutral", "0"
     elif pcr_value <= 0.7 and pcr_value > 0.78: return "Resistance", "Strike price +20"    
-    elif pcr_value <= 0.78 and pcr_value > 0.59: return "Resistance", "Strike price -20"   
+    elif pcr_value <= 0.78 and pcr_value > 0.59: return "Resistance", "Strike price -5"   
     elif pcr_value <= 0.59 and pcr_value > 0.4: return "Resistance", "Strike price -30"
     elif pcr_value <= 0.4 and pcr_value > 0.3: return "Resistance", "Strike price -20"
     elif pcr_value <= 0.3 and pcr_value > 0.2: return "Strong Resistance", "Strike price -20"
