@@ -88,10 +88,12 @@ class DataManager:
                 if 'timestamp' in df.columns:
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                 return df
-            return pd.DataFrame()
+            # Return empty DataFrame with timestamp column if no data
+            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         except Exception as e:
             st.error(f"Database load error: {e}")
-            return pd.DataFrame()
+            # Return empty DataFrame with timestamp column on error
+            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
 def process_historical_data(data, interval):
     """Convert API response to DataFrame"""
@@ -427,13 +429,14 @@ def main():
             df = st.session_state.chart_data
         
         if not df.empty:
-            # Ensure we have the timestamp column
+            # Ensure we have the timestamp column and handle missing values
             if 'timestamp' not in df.columns:
                 st.error("Timestamp column is missing from the data")
                 return
             
-            # Ensure timestamp is datetime
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Ensure timestamp is datetime and drop any missing values
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df = df.dropna(subset=['timestamp'])
             
             # Apply timeframe grouping if needed (only if we have enough data)
             if timeframes[selected_timeframe] != "1" and len(df) > 1:
