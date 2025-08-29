@@ -9,22 +9,16 @@ from streamlit_autorefresh import st_autorefresh
 
 # ========== CONFIG ==========
 try:
-    # Dhan API credentials
     DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
     DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
-
-    # Supabase credentials
     SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
-
-    # Telegram credentials
     TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
     TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
 except Exception as e:
     st.error("Please set up API credentials in Streamlit secrets.toml")
     st.stop()
 
-# Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 UNDERLYING_SCRIP = 13
@@ -32,7 +26,6 @@ UNDERLYING_SEG = "IDX_I"
 EXPIRY_OVERRIDE = None
 LOT_SIZE = 75  # Lot size for NIFTY/BANKNIFTY
 
-# Weights for bias scoring
 WEIGHTS = {
     "ChgOI_Bias": 1.5,
     "Volume_Bias": 1.2,
@@ -57,14 +50,14 @@ def calculate_pcr(pe_oi, ce_oi):
     return pe_oi / ce_oi if ce_oi != 0 else float('inf')
 
 def determine_pcr_level(pcr_value):
-    if pcr_value >= 3: return "Strong Support", "Strike price +25"
-    elif pcr_value >= 2: return "Strong Support", "Strike price +20"
-    elif pcr_value >= 1.5: return "Support", "Strike price +5"
+    if pcr_value >= 3: return "Strong Support", "Strike price +30"
+    elif pcr_value >= 2: return "Strong Support", "Strike price +30"
+    elif pcr_value >= 1.5: return "Support", "Strike price +25"
     elif pcr_value >= 1.2: return "Support", "Strike price -20"
     elif 0.71 <= pcr_value <= 1.19: return "Neutral", "0"
     elif pcr_value <= 0.7 and pcr_value > 0.78: return "Resistance", "Strike price +20"    
-    elif pcr_value <= 0.78 and pcr_value > 0.59: return "Resistance", "Strike price +5"   
-    elif pcr_value <= 0.59 and pcr_value > 0.4: return "Resistance", "Strike price -20"
+    elif pcr_value <= 0.78 and pcr_value > 0.59: return "Resistance", "Strike price -20"   
+    elif pcr_value <= 0.59 and pcr_value > 0.4: return "Resistance", "Strike price -30"
     elif pcr_value <= 0.4 and pcr_value > 0.3: return "Resistance", "Strike price -20"
     elif pcr_value <= 0.3 and pcr_value > 0.2: return "Strong Resistance", "Strike price -20"
     else: return "Strong Resistance", "Strike price +25"
@@ -144,14 +137,14 @@ def build_dataframe_from_optionchain(oc_data):
 
 def determine_atm_band(df, underlying):
     strikes = df["strikePrice"].values
-    diffs = np.diff(np.unique(strikes))
-    step = diffs[diffs > 0].min() if diffs.size else 50.0
     atm_strike = min(strikes, key=lambda x: abs(x - underlying))
-    return atm_strike, 2 * step
+    step = 50  # Fixed step to include smaller increments
+    band = step * 10  # Covers ±10 steps around ATM by default
+    return atm_strike, band
 
 # ========== BIAS ANALYSIS ==========
 def analyze_bias(df, underlying, atm_strike, band):
-    focus = df[(df["strikePrice"] >= atm_strike - band) & (df["strikePrice"] <= atm_strike + band)].copy()
+    focus = df.copy()  # Include all strikes
     focus["Zone"] = focus["strikePrice"].apply(lambda x: "ATM" if x == atm_strike else ("ITM" if x < underlying else "OTM"))
     results = []
     for _, row in focus.iterrows():
@@ -240,13 +233,12 @@ def process_signals(results, underlying_price):
     open_signals = supabase.table("option_signals").select("*").eq("status","open").execute().data
 
     for row in results:
-        zone_start, zone_end = sorted([float(x) for x in row['Zone_Width'].split(" to ")])
+        zone_start, zone_end = sorted([float(x) for x in row['Zone_Width'].split(" to ")] if row['Zone_Width'] else [0,0])
         total_score = row['Total_Score']
         ask_qty_bias = row['AskQty_Bias']
         chg_oi_bias = row['ChgOI_Bias']
         in_zone = zone_start <= underlying_price <= zone_end
 
-        # --- Entry Signals ---
         if in_zone and total_score >= 4 and ask_qty_bias=="Bullish" and chg_oi_bias=="Bullish":
             if not any(s["strike"]==row["Strike"] and s["signal_type"]=="Call" for s in open_signals):
                 entry_price = row['lastPrice_CE']
@@ -262,25 +254,6 @@ def process_signals(results, underlying_price):
                 send_telegram_message(f"PUT ENTRY: Strike {row['Strike']} | LTP {entry_price}")
                 record_signal_db(row["Strike"], "Put", entry_price)
                 record_trade("ENTRY", "PUT", row["Strike"], entry_price, f"Bias {total_score}, AskQty Bearish")
-
-    # --- Exit Signals ---
-    for s in open_signals:
-        row = next((r for r in results if r["Strike"]==s["strike"]), None)
-        if row:
-            zone_start, zone_end = sorted([float(x) for x in row['Zone_Width'].split(" to ")])
-            if s["signal_type"]=="Call" and underlying_price >= zone_end:
-                exit_price = row['lastPrice_CE']
-                pnl = calculate_pnl(s["entry_price"], exit_price, "Call")
-                send_telegram_message(f"CALL EXIT: Strike {s['strike']} | LTP {exit_price} | PnL {pnl}")
-                supabase.table("option_signals").update({"exit_price":exit_price,"status":"closed"}).eq("id",s["id"]).execute()
-                record_trade("EXIT", "CALL", s["strike"], exit_price, f"Spot reached resistance | PnL {pnl}")
-
-            elif s["signal_type"]=="Put" and underlying_price <= zone_start:
-                exit_price = row['lastPrice_PE']
-                pnl = calculate_pnl(s["entry_price"], exit_price, "Put")
-                send_telegram_message(f"PUT EXIT: Strike {s['strike']} | LTP {exit_price} | PnL {pnl}")
-                supabase.table("option_signals").update({"exit_price":exit_price,"status":"closed"}).eq("id",s["id"]).execute()
-                record_trade("EXIT", "PUT", s["strike"], exit_price, f"Spot reached support | PnL {pnl}")
 
     return signals
 
@@ -302,7 +275,6 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     else: 
         st.info("No entry signals currently.")
 
-    # Live Trade Log
     st.subheader("📜 Trade Log (Live)")
     trade_logs_df = fetch_trade_logs()
     if not trade_logs_df.empty:
@@ -313,37 +285,22 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
 # ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
-    
-    # Add auto-refresh every 60 seconds
     st_autorefresh(interval=60000, key="data_refresh")
     
     try:
-        # Fetch expiry list
         expiry_list = fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)
         if not expiry_list:
             st.error("No expiry dates found")
             return
-            
-        # Use latest expiry if not overridden
         expiry = EXPIRY_OVERRIDE if EXPIRY_OVERRIDE else expiry_list[-1]
-        
-        # Fetch option chain data
         oc_data = fetch_option_chain(UNDERLYING_SCRIP, UNDERLYING_SEG, expiry)
         underlying, df = build_dataframe_from_optionchain(oc_data)
-        
-        # Determine ATM strike and band
         atm_strike, band = determine_atm_band(df, underlying)
-        
-        # Analyze bias
         results = analyze_bias(df, underlying, atm_strike, band)
-        
-        # Display UI
         show_streamlit_ui(results, underlying, expiry, atm_strike)
-        
     except Exception as e:
         st.error(f"Error: {str(e)}")
         st.exception(e)
 
-# Run the main function
 if __name__ == "__main__":
     main()
