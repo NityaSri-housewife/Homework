@@ -3,15 +3,15 @@ import pandas as pd
 import requests
 import time
 from datetime import datetime
-import plotly.graph_objects as go
 import pytz
+import plotly.graph_objects as go
 
 # -----------------------
 # Load Secrets
 # -----------------------
 DHAN_TOKEN = st.secrets["DHAN_TOKEN"]
 DHAN_CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
-NIFTY_SPOT_ID = "256265"  # Dhan Security ID for Nifty 50 Spot
+NIFTY_SPOT_ID = 13  # Security ID for Nifty 50 Spot
 UPDATE_INTERVAL = 60  # seconds, can be 120 for 2 min, 180 for 3 min
 
 st.title("Live Nifty Spot Price Candlestick Chart")
@@ -25,7 +25,7 @@ chart = st.plotly_chart(go.Figure(), use_container_width=True)
 # Function to fetch Nifty spot price
 def fetch_nifty_spot():
     url = "https://api.dhan.co/v2/marketfeed/ltp"
-    payload = {"NSE_INDEX": [int(NIFTY_SPOT_ID)]}  # Correct segment for indices
+    payload = {"IDX_I": [NIFTY_SPOT_ID]}  # Correct segment for Nifty 50 Spot
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -34,7 +34,7 @@ def fetch_nifty_spot():
     }
     try:
         response = requests.post(url, json=payload, headers=headers).json()
-        price = response["data"]["NSE_INDEX"][NIFTY_SPOT_ID]["last_price"]
+        price = response["data"]["IDX_I"][str(NIFTY_SPOT_ID)]["last_price"]
         return price
     except Exception as e:
         st.error(f"Error fetching data: {e}")
