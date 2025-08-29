@@ -9,6 +9,7 @@ pytz>=2023.3
 # Plotting & Visualization
 plotly>=5.15.0
 matplotlib
+websocket
 
 # Technical Analysis & Indicators
 ta
