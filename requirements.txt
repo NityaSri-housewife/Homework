@@ -5,6 +5,8 @@ numpy>=1.24.0
 scipy>=1.10.0
 openpyxl>=3.1.0
 pytz>=2023.3
+pytz
+numpy
 
 # Plotting & Visualization
 plotly>=5.15.0
