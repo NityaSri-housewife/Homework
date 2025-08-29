@@ -5,6 +5,7 @@ import streamlit as st
 import time
 from datetime import datetime, timedelta
 from supabase import create_client, Client
+from streamlit_autorefresh import st_autorefresh
 
 # ========== CONFIG ==========
 try:
@@ -252,25 +253,24 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
     st.subheader(f"IST Time: {ist_time.strftime('%Y-%m-%d %H:%M:%S')}")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
-    if not results: st.warning("No data to display."); return
+    if not results: 
+        st.warning("No data to display.")
+        return
     df_display = pd.DataFrame(results)
     st.dataframe(df_display)
     signals = process_signals(results, underlying)
-    if signals: st.subheader("Entry Signals"); st.table(pd.DataFrame(signals))
-    else: st.info("No entry signals currently.")
+    if signals: 
+        st.subheader("Entry Signals")
+        st.table(pd.DataFrame(signals))
+    else: 
+        st.info("No entry signals currently.")
 
 # ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
     
-    # Auto-refresh every 30 seconds using time.sleep() and st.rerun()
-    if 'last_refresh' not in st.session_state:
-        st.session_state.last_refresh = time.time()
-    
-    current_time = time.time()
-    if current_time - st.session_state.last_refresh >= 30:
-        st.session_state.last_refresh = current_time
-        st.rerun()
+    # Auto-refresh every 30 seconds
+    st_autorefresh(interval=30 * 1000, key="data_refresh")
 
     with st.spinner("Fetching option chain data..."):
         try:
@@ -280,7 +280,8 @@ def main():
             atm_strike, band = determine_atm_band(df, underlying)
             results = analyze_bias(df, underlying, atm_strike, band)
             show_streamlit_ui(results, underlying, expiry, atm_strike)
-        except Exception as e: st.error(f"Error: {e}")
+        except Exception as e: 
+            st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
