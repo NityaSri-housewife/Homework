@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-import time
-import datetime
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 from supabase import create_client
 import telegram
 import streamlit.components.v1 as components
@@ -11,27 +11,49 @@ import streamlit.components.v1 as components
 # ================= CONFIG =================
 st.set_page_config(page_title="VOB 3-min Chart", layout="wide")
 
+# ---------- Load credentials from secrets.toml ----------
 DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
+DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
+
 SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
+
 TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
 
+# ---------- Script settings ----------
 SYMBOL = "NSE:NIFTY"
 INTERVAL = "3m"  # 3-minute candles
 VOB_LENGTH = 5
-REFRESH_SECONDS = 30
+REFRESH_SECONDS = 180  # 3 minutes
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 # ================= FUNCTIONS =================
-@st.cache_data(ttl=30)
+
+@st.cache_data(ttl=REFRESH_SECONDS)
 def fetch_dhan_ohlc(symbol, interval, limit=500):
     url = f"https://openapi.dhan.co/v1/market/candle?symbol={symbol}&interval={interval}&count={limit}"
     headers = {"Authorization": f"Bearer {DHAN_ACCESS_TOKEN}"}
-    res = requests.get(url, headers=headers)
+    
+    # Retry setup
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    
+    try:
+        res = session.get(url, headers=headers, timeout=10)
+        res.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error connecting to Dhan API: {e}")
+        return pd.DataFrame()  # return empty dataframe on error
+    
     data = res.json()
+    if "data" not in data:
+        st.error(f"No data returned from Dhan API: {data}")
+        return pd.DataFrame()
+    
     df = pd.DataFrame(data["data"])
     df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
     df.set_index("time", inplace=True)
@@ -59,72 +81,90 @@ def compute_vob(df, length=VOB_LENGTH):
     df['bear_base'] = np.where(df['crossDn'], np.maximum(df['open'], df['close']), np.nan)
     return df
 
+# ---------------- Supabase ----------------
 def save_to_supabase(df):
+    if df.empty:
+        return
     records = df.reset_index().to_dict(orient='records')
-    for rec in records:
-        supabase.table('vob_data').upsert(rec).execute()
+    supabase.table('vob_data').upsert(records).execute()
 
-def send_telegram_signal(msg):
-    try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-    except:
-        pass
+# ---------------- Telegram ----------------
+def send_telegram_signal(msg, timestamp):
+    if 'last_alert_time' not in st.session_state:
+        st.session_state['last_alert_time'] = None
+    if st.session_state['last_alert_time'] != timestamp:
+        try:
+            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+            st.session_state['last_alert_time'] = timestamp
+        except:
+            pass
 
 # ================= STREAMLIT DISPLAY =================
 st.title("VOB Indicator 3-min Chart")
 
+# Auto-refresh every REFRESH_SECONDS using meta refresh
+st_autorefresh_placeholder = st.empty()
+st_autorefresh_placeholder.markdown(
+    f"<meta http-equiv='refresh' content='{REFRESH_SECONDS}'>", unsafe_allow_html=True
+)
+
 # Fetch & compute
 df = fetch_dhan_ohlc(SYMBOL, INTERVAL)
-df = compute_vob(df)
-save_to_supabase(df)
+if not df.empty:
+    df = compute_vob(df)
+    save_to_supabase(df)
 
-# Show recent signals
-last = df.iloc[-1]
-if last['crossUp']:
-    send_telegram_signal(f"BULLISH Signal on {SYMBOL} at {last.name}")
-    st.success(f"BULLISH Signal at {last.name}")
-elif last['crossDn']:
-    send_telegram_signal(f"BEARISH Signal on {SYMBOL} at {last.name}")
-    st.error(f"BEARISH Signal at {last.name}")
+    # Show recent signals
+    last = df.iloc[-1]
+    if last['crossUp']:
+        send_telegram_signal(f"BULLISH Signal on {SYMBOL} at {last.name}", last.name)
+        st.success(f"BULLISH Signal at {last.name}")
+    elif last['crossDn']:
+        send_telegram_signal(f"BEARISH Signal on {SYMBOL} at {last.name}", last.name)
+        st.error(f"BEARISH Signal at {last.name}")
 
-st.subheader("Latest 10 Candles")
-st.dataframe(df.tail(10))
+    st.subheader("Latest 10 Candles")
+    st.dataframe(df.tail(10))
 
-# ================= CHART =================
-chart_html = """
-<div id="chart" style="width: 100%; height: 600px;"></div>
-<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-<script>
-const chart = LightweightCharts.createChart(document.getElementById('chart'), {
-    layout: { backgroundColor: '#1e1e1e', textColor: '#d1d4dc' },
-    rightPriceScale: { borderVisible: false },
-    timeScale: { borderVisible: false }
-});
-const candleSeries = chart.addCandlestickSeries();
-const bullLineSeries = chart.addLineSeries({ color: '#26ba9f', lineWidth: 2 });
-const bearLineSeries = chart.addLineSeries({ color: '#ba2646', lineWidth: 2 });
+    # ================= CHART =================
+    chart_html = """
+    <div id="chart" style="width: 100%; height: 600px;"></div>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        layout: { backgroundColor: '#1e1e1e', textColor: '#d1d4dc' },
+        rightPriceScale: { borderVisible: false },
+        timeScale: { borderVisible: false }
+    });
+    const candleSeries = chart.addCandlestickSeries();
+    const bullLineSeries = chart.addLineSeries({ color: '#26ba9f', lineWidth: 2 });
+    const bearLineSeries = chart.addLineSeries({ color: '#ba2646', lineWidth: 2 });
 
-const data = """ + df.reset_index()[["time","open","high","low","close","bull_base","bear_base"]].to_json(orient='records') + """;
+    const data = """ + df.reset_index()[["time","open","high","low","close","bull_base","bear_base"]].to_json(orient='records') + """; 
 
-const candles = data.map(d => ({
-    time: new Date(d.time).getTime()/1000,
-    open: d.open,
-    high: d.high,
-    low: d.low,
-    close: d.close
-}));
-candleSeries.setData(candles);
+    const candles = data.map(d => ({
+        time: new Date(d.time).getTime()/1000,
+        open: d.open,
+        high: d.high,
+        low: d.low,
+        close: d.close
+    }));
+    candleSeries.setData(candles);
 
-const bullZones = data.filter(d => d.bull_base!=null).map(d => ({ time: new Date(d.time).getTime()/1000, value: d.bull_base }));
-const bearZones = data.filter(d => d.bear_base!=null).map(d => ({ time: new Date(d.time).getTime()/1000, value: d.bear_base }));
+    const bullZones = data.filter(d => d.bull_base!=null).map(d => ({ time: new Date(d.time).getTime()/1000, value: d.bull_base }));
+    const bearZones = data.filter(d => d.bear_base!=null).map(d => ({ time: new Date(d.time).getTime()/1000, value: d.bear_base }));
 
-bullLineSeries.setData(bullZones);
-bearLineSeries.setData(bearZones);
-</script>
+    bullLineSeries.setData(bullZones);
+    bearLineSeries.setData(bearZones);
+    </script>
+    """
+    components.html(chart_html, height=650, scrolling=True)
+
+# ================= NOTES =================
 """
-
-components.html(chart_html, height=650, scrolling=True)
-
-# ================= AUTO REFRESH =================
-st_autorefresh = st.experimental_data_editor if hasattr(st, "experimental_data_editor") else None
-st.write(f"Data refreshes every {REFRESH_SECONDS} seconds")
+Areas to Improve / Watch:
+1. Streamlit Refresh: using st.experimental_rerun or st_autorefresh is smoother than full page reloads.
+2. Caching: @st.cache_data(ttl=REFRESH_SECONDS) helps reduce API calls and respect Dhan limits.
+3. Telegram alerts: store last alerted candle timestamp to avoid duplicates.
+4. Supabase upsert: batch upsert improves performance for large datasets.
+"""
