@@ -28,7 +28,7 @@ class DhanAPI:
             "access-token": self.access_token,
             "client-id": self.client_id
         }
-        # Nifty 50 security ID for NSE_EQ
+        # Nifty 50 security ID
         self.nifty_security_id = "13"
         self.nifty_segment = "IDX_I"
 
@@ -43,8 +43,19 @@ class DhanAPI:
             "fromDate": from_date,
             "toDate": to_date
         }
-        response = requests.post(url, headers=self.headers, json=payload)
-        return response.json() if response.status_code == 200 else None
+        
+        st.sidebar.info(f"Requesting data from {from_date} to {to_date}")
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"API Error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            st.error(f"Request failed: {e}")
+            return None
 
     def get_live_quote(self):
         """Fetch current quote data"""
@@ -52,8 +63,17 @@ class DhanAPI:
         payload = {
             self.nifty_segment: [self.nifty_security_id]
         }
-        response = requests.post(url, headers=self.headers, json=payload)
-        return response.json() if response.status_code == 200 else None
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"Quote API Error: {response.status_code}")
+                return None
+        except Exception as e:
+            st.error(f"Quote request failed: {e}")
+            return None
 
 class DataManager:
     def __init__(self, supabase: Client):
@@ -63,6 +83,9 @@ class DataManager:
     def save_to_db(self, df):
         """Save DataFrame to Supabase"""
         try:
+            if df.empty:
+                return False
+                
             df_copy = df.copy()
             df_copy['timestamp'] = df_copy['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
             data = df_copy.to_dict('records')
@@ -87,79 +110,86 @@ class DataManager:
                 # Convert timestamp string to datetime
                 if 'timestamp' in df.columns:
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
-                return df
+                    return df
             return pd.DataFrame()
         except Exception as e:
             st.error(f"Database load error: {e}")
             return pd.DataFrame()
 
 def process_historical_data(data, interval):
-    """Convert API response to DataFrame"""
-    if not data or 'open' not in data:
+    """Convert API response to DataFrame with better error handling"""
+    if not data:
+        st.error("No data received from API")
+        return pd.DataFrame()
+    
+    # Debug: show the structure of the response
+    st.sidebar.write("API Response keys:", list(data.keys()))
+    
+    # Check if we have the expected data structure
+    if 'open' not in data or 'high' not in data or 'low' not in data or 'close' not in data:
+        st.error(f"Missing required data fields. Available keys: {list(data.keys())}")
         return pd.DataFrame()
     
     # Convert to Indian timezone
     ist = pytz.timezone('Asia/Kolkata')
     
     try:
-        # Handle timestamp conversion with better error handling
-        if 'timestamp' in data and len(data['timestamp']) > 0:
-            # Try different methods to parse timestamp
+        n_periods = len(data['open'])
+        
+        # Handle timestamp data
+        if 'timestamp' in data and len(data['timestamp']) == n_periods:
             try:
-                # First try with seconds since epoch
-                timestamps = pd.to_datetime(data['timestamp'], unit='s')
+                # Try to parse timestamps (they might be in milliseconds or seconds)
+                timestamps = pd.to_datetime(data['timestamp'], unit='ms')  # Try milliseconds first
             except (ValueError, TypeError):
                 try:
-                    # If that fails, try without unit parameter
-                    timestamps = pd.to_datetime(data['timestamp'])
+                    timestamps = pd.to_datetime(data['timestamp'], unit='s')  # Try seconds
                 except (ValueError, TypeError):
-                    # If all else fails, create a time range
-                    st.warning("Could not parse timestamps, generating time range")
-                    n_periods = len(data['open'])
-                    end_time = datetime.now(ist)
-                    start_time = end_time - timedelta(minutes=n_periods * int(interval))
-                    timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
-            
-            # Convert to IST timezone
-            if timestamps.tz is None:
-                timestamps = timestamps.tz_localize('UTC').tz_convert(ist)
-            else:
-                timestamps = timestamps.tz_convert(ist)
+                    try:
+                        timestamps = pd.to_datetime(data['timestamp'])  # Try without unit
+                    except (ValueError, TypeError):
+                        # Fallback: generate timestamps
+                        st.warning("Could not parse API timestamps, generating time range")
+                        end_time = datetime.now(ist)
+                        start_time = end_time - timedelta(minutes=n_periods * int(interval))
+                        timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
         else:
-            # If no timestamps in data, create a time range
-            n_periods = len(data['open'])
+            # Generate timestamps if not provided or mismatched
+            st.warning("Generating timestamps as they were not provided or mismatched")
             end_time = datetime.now(ist)
             start_time = end_time - timedelta(minutes=n_periods * int(interval))
             timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
         
+        # Ensure timestamps are in IST
+        if timestamps.tz is None:
+            timestamps = timestamps.tz_localize('UTC').tz_convert(ist)
+        else:
+            timestamps = timestamps.tz_convert(ist)
+        
+        # Create DataFrame
         df = pd.DataFrame({
             'timestamp': timestamps,
             'open': data['open'],
             'high': data['high'],
             'low': data['low'],
             'close': data['close'],
-            'volume': data['volume']
+            'volume': data.get('volume', [0] * n_periods)  # Default to zeros if volume missing
         })
+        
+        st.sidebar.success(f"Processed {len(df)} data points")
+        return df
         
     except Exception as e:
         st.error(f"Error processing historical data: {e}")
+        import traceback
+        st.sidebar.error(f"Traceback: {traceback.format_exc()}")
         return pd.DataFrame()
-    
-    # Convert to specified timeframe if needed
-    if interval != "1":
-        df.set_index('timestamp', inplace=True)
-        df = df.resample(f'{interval}T').agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        }).dropna().reset_index()
-    
-    return df
 
 def calculate_vob_indicator(df, length1=5):
     """Calculate VOB (Volume Order Block) indicator"""
+    if len(df) < 50:
+        return []  # Not enough data for meaningful VOB calculation
+    
     df = df.copy()
     
     # Calculate EMAs
@@ -355,22 +385,24 @@ def main():
         "1 Min": "1",
         "3 Min": "3", 
         "5 Min": "5",
-        "15 Min": "15"
+        "15 Min": "15",
+        "30 Min": "30",
+        "60 Min": "60"
     }
     
     selected_timeframe = st.sidebar.selectbox(
         "Select Timeframe", 
         list(timeframes.keys()),
-        index=1  # Default to 3 Min
+        index=2  # Default to 5 Min
     )
     
-    hours_back = st.sidebar.slider("Hours of Data", 1, 24, 6)
+    hours_back = st.sidebar.slider("Hours of Data", 1, 48, 6)
     
     st.sidebar.header("VOB Indicator")
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
     
-    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=False)
     
     # Main content area
     col1, col2 = st.columns([3, 1])
@@ -400,7 +432,7 @@ def main():
                         st.success(f"Fetched {len(df)} candles")
                         st.rerun()
                     else:
-                        st.warning("No data received")
+                        st.warning("No valid data received after processing")
                 else:
                     st.error("API request failed")
         
@@ -411,12 +443,17 @@ def main():
         if st.button("Get Live Price"):
             quote_data = dhan_api.get_live_quote()
             if quote_data and 'data' in quote_data:
-                nifty_data = quote_data['data'][dhan_api.nifty_segment][dhan_api.nifty_security_id]
-                live_placeholder.metric(
-                    "Nifty 50",
-                    f"₹{nifty_data['last_price']:.2f}",
-                    f"{nifty_data['net_change']:.2f}"
-                )
+                try:
+                    nifty_data = quote_data['data'][dhan_api.nifty_segment][dhan_api.nifty_security_id]
+                    live_placeholder.metric(
+                        "Nifty 50",
+                        f"₹{nifty_data['last_price']:.2f}",
+                        f"{nifty_data.get('net_change', 0):.2f}"
+                    )
+                except KeyError as e:
+                    st.error(f"Error parsing quote data: {e}")
+            else:
+                st.error("Could not fetch live quote")
     
     with col1:
         # Load and display chart
@@ -426,20 +463,16 @@ def main():
         if 'chart_data' in st.session_state:
             df = st.session_state.chart_data
         
-        if not df.empty:
-            # Ensure we have the timestamp column
-            if 'timestamp' not in df.columns:
-                st.error("Timestamp column is missing from the data")
-                return
-            
+        if not df.empty and 'timestamp' in df.columns:
             # Ensure timestamp is datetime
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             
             # Apply timeframe grouping if needed (only if we have enough data)
-            if timeframes[selected_timeframe] != "1" and len(df) > 1:
+            target_interval = timeframes[selected_timeframe]
+            if target_interval != "1" and len(df) > 1:
                 try:
                     df.set_index('timestamp', inplace=True)
-                    df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
+                    df = df.resample(f'{target_interval}T').agg({
                         'open': 'first',
                         'high': 'max',
                         'low': 'min',
@@ -482,6 +515,8 @@ def main():
                 
         else:
             st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
+            if not df.empty:
+                st.error(f"Data available but missing timestamp column. Columns: {list(df.columns)}")
     
     # Auto refresh functionality
     if auto_refresh:
