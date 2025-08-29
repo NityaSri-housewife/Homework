@@ -313,3 +313,37 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
 # ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
+    
+    # Add auto-refresh every 60 seconds
+    st_autorefresh(interval=60000, key="data_refresh")
+    
+    try:
+        # Fetch expiry list
+        expiry_list = fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)
+        if not expiry_list:
+            st.error("No expiry dates found")
+            return
+            
+        # Use latest expiry if not overridden
+        expiry = EXPIRY_OVERRIDE if EXPIRY_OVERRIDE else expiry_list[-1]
+        
+        # Fetch option chain data
+        oc_data = fetch_option_chain(UNDERLYING_SCRIP, UNDERLYING_SEG, expiry)
+        underlying, df = build_dataframe_from_optionchain(oc_data)
+        
+        # Determine ATM strike and band
+        atm_strike, band = determine_atm_band(df, underlying)
+        
+        # Analyze bias
+        results = analyze_bias(df, underlying, atm_strike, band)
+        
+        # Display UI
+        show_streamlit_ui(results, underlying, expiry, atm_strike)
+        
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        st.exception(e)
+
+# Run the main function
+if __name__ == "__main__":
+    main()
