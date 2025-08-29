@@ -56,8 +56,8 @@ def calculate_pcr(pe_oi, ce_oi):
     return pe_oi / ce_oi if ce_oi != 0 else float('inf')
 
 def determine_pcr_level(pcr_value):
-    if pcr_value >= 3: return "Strong Support", "Strike price +30"
-    elif pcr_value >= 2: return "Strong Support", "Strike price +30"
+    if pcr_value >= 3: return "Strong Support", "Strike price +10"
+    elif pcr_value >= 2: return "Strong Support", "Strike price +10"
     elif pcr_value >= 1.5: return "Support", "Strike price +5"
     elif pcr_value >= 1.2: return "Support", "Strike price -20"
     elif 0.71 <= pcr_value <= 1.19: return "Neutral", "0"
