@@ -1,4 +1,4 @@
-import requests
+import requests 
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -312,4 +312,4 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
 
 # ========== MAIN ==========
 def main():
-    st.set_page_config(page_title="Option Chain Bias", layout="wide")
+    st.set_page_config(page_title="Option Chain Bias", layout="wide
