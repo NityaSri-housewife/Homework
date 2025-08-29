@@ -2,20 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 from supabase import create_client
 import telegram
 import streamlit.components.v1 as components
-import time
+from datetime import datetime, timedelta
 
 # ================= CONFIG =================
 st.set_page_config(page_title="VOB 3-min Chart", layout="wide")
 
 # ---------- Load credentials ----------
 DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
-DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
-
 SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
 
@@ -23,8 +19,10 @@ TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
 
 # ---------- Script settings ----------
-SYMBOL = "NSE:NIFTY"
-INTERVAL = "3m"
+SECURITY_ID = "1333"   # NIFTY spot, confirm from Dhan instruments
+EXCHANGE_SEGMENT = "NSE_EQ"
+INSTRUMENT = "INDEX"
+INTERVAL = "1"  # fetch 1-min candles
 VOB_LENGTH = 5
 REFRESH_SECONDS = 180
 
@@ -32,31 +30,52 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
 # ================= FUNCTIONS =================
-
 @st.cache_data(ttl=REFRESH_SECONDS)
-def fetch_dhan_ohlc(symbol, interval, limit=500):
-    url = f"https://openapi.dhan.co/v1/market/candle?symbol={symbol}&interval={interval}&count={limit}"
-    headers = {"Authorization": f"Bearer {DHAN_ACCESS_TOKEN}"}
-    
-    # Retry setup
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
+def fetch_dhan_ohlc(security_id=SECURITY_ID, interval=INTERVAL, lookback_minutes=500):
+    url = "https://api.dhan.co/v2/charts/intraday"
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "access-token": DHAN_ACCESS_TOKEN
+    }
+    now = datetime.now()
+    from_date = (now - timedelta(minutes=lookback_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    to_date = now.strftime("%Y-%m-%d %H:%M:%S")
+    payload = {
+        "securityId": security_id,
+        "exchangeSegment": EXCHANGE_SEGMENT,
+        "instrument": INSTRUMENT,
+        "interval": interval,
+        "oi": False,
+        "fromDate": from_date,
+        "toDate": to_date
+    }
     try:
-        res = session.get(url, headers=headers, timeout=10)
+        res = requests.post(url, headers=headers, json=payload, timeout=10)
         res.raise_for_status()
         data = res.json()
-        if "data" not in data:
-            st.warning(f"No data returned from Dhan API: {data}")
+        if "timestamp" not in data or len(data["timestamp"]) == 0:
             return pd.DataFrame()
-        df = pd.DataFrame(data["data"])
-        df["time"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df = pd.DataFrame({
+            "time": pd.to_datetime(data["timestamp"], unit="s"),
+            "open": data["open"],
+            "high": data["high"],
+            "low": data["low"],
+            "close": data["close"],
+            "volume": data["volume"]
+        })
         df.set_index("time", inplace=True)
-        return df[["open", "high", "low", "close"]]
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error connecting to Dhan API: {e}")
-        # Fallback: return last cached data if available, else empty
+        # Resample to 3-min candles
+        df_resampled = df.resample("3T").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna()
+        return df_resampled
+    except Exception as e:
+        st.error(f"Error fetching from Dhan API: {e}")
         return pd.DataFrame()
 
 def ema(series, period):
@@ -81,14 +100,12 @@ def compute_vob(df, length=VOB_LENGTH):
     df['bear_base'] = np.where(df['crossDn'], np.maximum(df['open'], df['close']), np.nan)
     return df
 
-# ---------------- Supabase ----------------
 def save_to_supabase(df):
     if df.empty:
         return
     records = df.reset_index().to_dict(orient='records')
     supabase.table('vob_data').upsert(records).execute()
 
-# ---------------- Telegram ----------------
 def send_telegram_signal(msg, timestamp):
     if 'last_alert_time' not in st.session_state:
         st.session_state['last_alert_time'] = None
@@ -109,7 +126,7 @@ st_autorefresh_placeholder.markdown(
 )
 
 # Fetch data
-df = fetch_dhan_ohlc(SYMBOL, INTERVAL)
+df = fetch_dhan_ohlc()
 
 if not df.empty:
     df = compute_vob(df)
@@ -118,10 +135,10 @@ if not df.empty:
     # Signals
     last = df.iloc[-1]
     if last['crossUp']:
-        send_telegram_signal(f"BULLISH Signal on {SYMBOL} at {last.name}", last.name)
+        send_telegram_signal(f"BULLISH Signal at {last.name}", last.name)
         st.success(f"BULLISH Signal at {last.name}")
     elif last['crossDn']:
-        send_telegram_signal(f"BEARISH Signal on {SYMBOL} at {last.name}", last.name)
+        send_telegram_signal(f"BEARISH Signal at {last.name}", last.name)
         st.error(f"BEARISH Signal at {last.name}")
 
     st.subheader("Latest 10 Candles")
