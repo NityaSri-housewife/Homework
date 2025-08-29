@@ -125,9 +125,12 @@ def process_historical_data(data, interval):
     # Debug: show the structure of the response
     st.sidebar.write("API Response keys:", list(data.keys()))
     
-    # Check if we have the expected data structure
-    if 'open' not in data or 'high' not in data or 'low' not in data or 'close' not in data:
-        st.error(f"Missing required data fields. Available keys: {list(data.keys())}")
+    # Check if we have the expected data structure - the API returns arrays directly
+    required_keys = ['open', 'high', 'low', 'close']
+    missing_keys = [key for key in required_keys if key not in data]
+    
+    if missing_keys:
+        st.error(f"Missing required data fields: {missing_keys}. Available keys: {list(data.keys())}")
         return pd.DataFrame()
     
     # Convert to Indian timezone
@@ -135,24 +138,28 @@ def process_historical_data(data, interval):
     
     try:
         n_periods = len(data['open'])
+        st.sidebar.info(f"Received {n_periods} data points")
         
-        # Handle timestamp data
+        # Handle timestamp data - check if timestamps are provided
         if 'timestamp' in data and len(data['timestamp']) == n_periods:
             try:
-                # Try to parse timestamps (they might be in milliseconds or seconds)
-                timestamps = pd.to_datetime(data['timestamp'], unit='ms')  # Try milliseconds first
-            except (ValueError, TypeError):
+                # Try different timestamp formats
                 try:
-                    timestamps = pd.to_datetime(data['timestamp'], unit='s')  # Try seconds
+                    # Try milliseconds first (common in financial APIs)
+                    timestamps = pd.to_datetime(data['timestamp'], unit='ms')
                 except (ValueError, TypeError):
                     try:
-                        timestamps = pd.to_datetime(data['timestamp'])  # Try without unit
+                        # Try seconds
+                        timestamps = pd.to_datetime(data['timestamp'], unit='s')
                     except (ValueError, TypeError):
-                        # Fallback: generate timestamps
-                        st.warning("Could not parse API timestamps, generating time range")
-                        end_time = datetime.now(ist)
-                        start_time = end_time - timedelta(minutes=n_periods * int(interval))
-                        timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
+                        # Try without unit (already datetime objects or strings)
+                        timestamps = pd.to_datetime(data['timestamp'])
+            except Exception as e:
+                st.warning(f"Could not parse timestamps: {e}. Generating time range.")
+                # Fallback: generate timestamps
+                end_time = datetime.now(ist)
+                start_time = end_time - timedelta(minutes=n_periods * int(interval))
+                timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
         else:
             # Generate timestamps if not provided or mismatched
             st.warning("Generating timestamps as they were not provided or mismatched")
@@ -166,6 +173,13 @@ def process_historical_data(data, interval):
         else:
             timestamps = timestamps.tz_convert(ist)
         
+        # Handle volume data (might be missing or named differently)
+        if 'volume' in data and len(data['volume']) == n_periods:
+            volume_data = data['volume']
+        else:
+            st.warning("Volume data not found or mismatched, using zeros")
+            volume_data = [0] * n_periods
+        
         # Create DataFrame
         df = pd.DataFrame({
             'timestamp': timestamps,
@@ -173,10 +187,10 @@ def process_historical_data(data, interval):
             'high': data['high'],
             'low': data['low'],
             'close': data['close'],
-            'volume': data.get('volume', [0] * n_periods)  # Default to zeros if volume missing
+            'volume': volume_data
         })
         
-        st.sidebar.success(f"Processed {len(df)} data points")
+        st.sidebar.success(f"Processed {len(df)} data points with timestamp column")
         return df
         
     except Exception as e:
@@ -425,14 +439,16 @@ def main():
                 
                 if data:
                     df = process_historical_data(data, timeframes[selected_timeframe])
-                    if not df.empty:
+                    if not df.empty and 'timestamp' in df.columns:
                         # Store in session state and database
                         st.session_state.chart_data = df
                         data_manager.save_to_db(df)
-                        st.success(f"Fetched {len(df)} candles")
+                        st.success(f"Fetched {len(df)} candles with timestamps")
                         st.rerun()
                     else:
                         st.warning("No valid data received after processing")
+                        if not df.empty:
+                            st.error(f"Data missing timestamp. Columns: {list(df.columns)}")
                 else:
                     st.error("API request failed")
         
