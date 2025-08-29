@@ -1,4 +1,4 @@
-import requests 
+import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -9,23 +9,29 @@ from streamlit_autorefresh import st_autorefresh
 
 # ========== CONFIG ==========
 try:
+    # Dhan API credentials
     DHAN_ACCESS_TOKEN = st.secrets["dhanauth"]["DHAN_ACCESS_TOKEN"]
     DHAN_CLIENT_ID = st.secrets["dhanauth"]["DHAN_CLIENT_ID"]
+
+    # Supabase credentials
     SUPABASE_URL = st.secrets["supabase"]["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["supabase"]["SUPABASE_KEY"]
+
+    # Telegram credentials
     TELEGRAM_TOKEN = st.secrets["telegram"]["TELEGRAM_TOKEN"]
     TELEGRAM_CHAT_ID = st.secrets["telegram"]["TELEGRAM_CHAT_ID"]
 except Exception as e:
     st.error("Please set up API credentials in Streamlit secrets.toml")
     st.stop()
 
+# Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 UNDERLYING_SCRIP = 13
 UNDERLYING_SEG = "IDX_I"
 EXPIRY_OVERRIDE = None
-LOT_SIZE = 75  # Lot size for NIFTY/BANKNIFTY
 
+# Weights for bias scoring
 WEIGHTS = {
     "ChgOI_Bias": 1.5,
     "Volume_Bias": 1.2,
@@ -137,14 +143,14 @@ def build_dataframe_from_optionchain(oc_data):
 
 def determine_atm_band(df, underlying):
     strikes = df["strikePrice"].values
+    diffs = np.diff(np.unique(strikes))
+    step = diffs[diffs > 0].min() if diffs.size else 50.0
     atm_strike = min(strikes, key=lambda x: abs(x - underlying))
-    step = 50  # Fixed step to include smaller increments
-    band = step * 10  # Covers ±10 steps around ATM by default
-    return atm_strike, band
+    return atm_strike, 2 * step
 
 # ========== BIAS ANALYSIS ==========
 def analyze_bias(df, underlying, atm_strike, band):
-    focus = df.copy()  # Include all strikes
+    focus = df[(df["strikePrice"] >= atm_strike - band) & (df["strikePrice"] <= atm_strike + band)].copy()
     focus["Zone"] = focus["strikePrice"].apply(lambda x: "ATM" if x == atm_strike else ("ITM" if x < underlying else "OTM"))
     results = []
     for _, row in focus.iterrows():
@@ -172,13 +178,19 @@ def analyze_bias(df, underlying, atm_strike, band):
         results.append({
             "Strike": row['strikePrice'],
             "Zone": row['Zone'],
-            "lastPrice_CE": row['lastPrice_CE'],
-            "lastPrice_PE": row['lastPrice_PE'],
+            "ChgOI_Bias": biases["ChgOI_Bias"],
+            "Volume_Bias": biases["Volume_Bias"],
+            "Gamma_Bias": biases["Gamma_Bias"],
+            "AskQty_Bias": biases["AskQty_Bias"],
+            "BidQty_Bias": biases["BidQty_Bias"],
+            "IV_Bias": biases["IV_Bias"],
+            "DVP_Bias": biases["DVP_Bias"],
+            "PressureBias": biases["PressureBias"],
+            "PCR_Bias": biases["PCR_Bias"],
             "PCR": pcr_oi,
             "Support_Resistance": pcr_level,
             "Zone_Width": zone_calculation,
-            "Total_Score": total_score,
-            **biases
+            "Total_Score": total_score
         })
     return results
 
@@ -190,15 +202,17 @@ def send_telegram_message(message):
     except: pass
 
 # ========== SUPABASE RECORD ==========
-def record_signal_db(strike, signal_type, entry_price, status="open"):
+def record_signal_db(strike, signal_type, entry_price, exit_price=None, status="open"):
     supabase.table("option_signals").insert({
         "timestamp": datetime.utcnow().isoformat(),
         "strike": strike,
         "signal_type": signal_type,
         "entry_price": entry_price,
+        "exit_price": exit_price,
         "status": status
     }).execute()
 
+# ========== TRADE LOG ==========
 def record_trade(entry_exit, signal_type, strike, price, reason):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -222,39 +236,44 @@ def fetch_trade_logs():
         return pd.DataFrame()
 
 # ========== SIGNAL GENERATION & EXIT ==========
-def calculate_pnl(entry_price, exit_price, signal_type):
-    if signal_type == "Call":
-        return (exit_price - entry_price) * LOT_SIZE
-    else:  # Put
-        return (entry_price - exit_price) * LOT_SIZE
-
 def process_signals(results, underlying_price):
     signals = []
     open_signals = supabase.table("option_signals").select("*").eq("status","open").execute().data
-
     for row in results:
-        zone_start, zone_end = sorted([float(x) for x in row['Zone_Width'].split(" to ")] if row['Zone_Width'] else [0,0])
+        zone_start, zone_end = [float(x) for x in row['Zone_Width'].split(" to ")]
         total_score = row['Total_Score']
         ask_qty_bias = row['AskQty_Bias']
         chg_oi_bias = row['ChgOI_Bias']
         in_zone = zone_start <= underlying_price <= zone_end
 
+        # Entry Signals
         if in_zone and total_score >= 4 and ask_qty_bias=="Bullish" and chg_oi_bias=="Bullish":
             if not any(s["strike"]==row["Strike"] and s["signal_type"]=="Call" for s in open_signals):
-                entry_price = row['lastPrice_CE']
                 signals.append({"Strike": row["Strike"], "Signal": "Call Entry"})
-                send_telegram_message(f"CALL ENTRY: Strike {row['Strike']} | LTP {entry_price}")
-                record_signal_db(row["Strike"], "Call", entry_price)
-                record_trade("ENTRY", "CALL", row["Strike"], entry_price, f"Bias {total_score}, AskQty Bullish")
+                send_telegram_message(f"CALL ENTRY: Strike {row['Strike']} | Spot {underlying_price}")
+                record_signal_db(row["Strike"], "Call", underlying_price)
+                record_trade("ENTRY", "CALL", row["Strike"], underlying_price, f"Bias {total_score}, AskQty Bullish")
 
         elif in_zone and total_score <= -4 and ask_qty_bias=="Bearish" and chg_oi_bias=="Bearish":
             if not any(s["strike"]==row["Strike"] and s["signal_type"]=="Put" for s in open_signals):
-                entry_price = row['lastPrice_PE']
                 signals.append({"Strike": row["Strike"], "Signal": "Put Entry"})
-                send_telegram_message(f"PUT ENTRY: Strike {row['Strike']} | LTP {entry_price}")
-                record_signal_db(row["Strike"], "Put", entry_price)
-                record_trade("ENTRY", "PUT", row["Strike"], entry_price, f"Bias {total_score}, AskQty Bearish")
+                send_telegram_message(f"PUT ENTRY: Strike {row['Strike']} | Spot {underlying_price}")
+                record_signal_db(row["Strike"], "Put", underlying_price)
+                record_trade("ENTRY", "PUT", row["Strike"], underlying_price, f"Bias {total_score}, AskQty Bearish")
 
+    # Exit Signals
+    for s in open_signals:
+        row = next((r for r in results if r["Strike"]==s["strike"]), None)
+        if row:
+            zone_start, zone_end = [float(x) for x in row['Zone_Width'].split(" to ")]
+            if s["signal_type"]=="Call" and underlying_price >= zone_end:
+                send_telegram_message(f"CALL EXIT: Strike {s['strike']} | Spot {underlying_price}")
+                supabase.table("option_signals").update({"exit_price":underlying_price,"status":"closed"}).eq("id",s["id"]).execute()
+                record_trade("EXIT", "CALL", s["strike"], underlying_price, "Spot reached resistance")
+            elif s["signal_type"]=="Put" and underlying_price <= zone_start:
+                send_telegram_message(f"PUT EXIT: Strike {s['strike']} | Spot {underlying_price}")
+                supabase.table("option_signals").update({"exit_price":underlying_price,"status":"closed"}).eq("id",s["id"]).execute()
+                record_trade("EXIT", "PUT", s["strike"], underlying_price, "Spot reached support")
     return signals
 
 # ========== STREAMLIT UI ==========
@@ -275,6 +294,7 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     else: 
         st.info("No entry signals currently.")
 
+    # Live Trade Log
     st.subheader("📜 Trade Log (Live)")
     trade_logs_df = fetch_trade_logs()
     if not trade_logs_df.empty:
@@ -285,22 +305,18 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
 # ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
-    st_autorefresh(interval=60000, key="data_refresh")
-    
-    try:
-        expiry_list = fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)
-        if not expiry_list:
-            st.error("No expiry dates found")
-            return
-        expiry = EXPIRY_OVERRIDE if EXPIRY_OVERRIDE else expiry_list[-1]
-        oc_data = fetch_option_chain(UNDERLYING_SCRIP, UNDERLYING_SEG, expiry)
-        underlying, df = build_dataframe_from_optionchain(oc_data)
-        atm_strike, band = determine_atm_band(df, underlying)
-        results = analyze_bias(df, underlying, atm_strike, band)
-        show_streamlit_ui(results, underlying, expiry, atm_strike)
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
-        st.exception(e)
+    st_autorefresh(interval=30 * 1000, key="data_refresh")
+
+    with st.spinner("Fetching option chain data..."):
+        try:
+            expiry = EXPIRY_OVERRIDE or fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)[0]
+            oc_data = fetch_option_chain(UNDERLYING_SCRIP, UNDERLYING_SEG, expiry)
+            underlying, df = build_dataframe_from_optionchain(oc_data)
+            atm_strike, band = determine_atm_band(df, underlying)
+            results = analyze_bias(df, underlying, atm_strike, band)
+            show_streamlit_ui(results, underlying, expiry, atm_strike)
+        except Exception as e: 
+            st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
