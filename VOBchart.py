@@ -427,26 +427,40 @@ def main():
             df = st.session_state.chart_data
         
         if not df.empty:
-            # Ensure timestamp is datetime
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Ensure we have the timestamp column
+            if 'timestamp' not in df.columns:
+                st.error("Timestamp column is missing from the data")
+                return
             
-            # Apply timeframe grouping if needed
-            if timeframes[selected_timeframe] != "1":
-                df.set_index('timestamp', inplace=True)
-                df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
-                    'open': 'first',
-                    'high': 'max',
-                    'low': 'min',
-                    'close': 'last',
-                    'volume': 'sum'
-                }).dropna().reset_index()
+            # Ensure timestamp is datetime
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Apply timeframe grouping if needed (only if we have enough data)
+            if timeframes[selected_timeframe] != "1" and len(df) > 1:
+                try:
+                    df.set_index('timestamp', inplace=True)
+                    df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
+                        'open': 'first',
+                        'high': 'max',
+                        'low': 'min',
+                        'close': 'last',
+                        'volume': 'sum'
+                    }).dropna().reset_index()
+                except Exception as e:
+                    st.error(f"Error resampling data: {e}")
+                    # If resampling fails, continue with original data
             
             # Calculate VOB zones if enabled
             vob_zones = None
-            if show_vob:
-                vob_zones = calculate_vob_indicator(df, vob_sensitivity)
-                st.sidebar.info(f"Found {len(vob_zones)} VOB zones")
+            if show_vob and len(df) > 50:  # Need enough data for VOB calculation
+                try:
+                    vob_zones = calculate_vob_indicator(df, vob_sensitivity)
+                    st.sidebar.info(f"Found {len(vob_zones)} VOB zones")
+                except Exception as e:
+                    st.sidebar.error(f"Error calculating VOB: {e}")
+                    vob_zones = None
+            elif show_vob:
+                st.sidebar.warning("Need more data points for VOB calculation")
             
             # Create and display chart
             fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
