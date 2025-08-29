@@ -1,79 +1,118 @@
 import streamlit as st
-import pandas as pd
 import requests
+import pandas as pd
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
-import plotly.graph_objects as go
+from supabase import create_client, Client
 
-# -----------------------
-# Load Secrets
-# -----------------------
-DHAN_TOKEN = st.secrets["DHAN_TOKEN"]
-DHAN_CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
-NIFTY_SPOT_ID = 13  # Security ID for Nifty 50 Spot
-UPDATE_INTERVAL = 60  # seconds, can be 120 for 2 min, 180 for 3 min
+# ----------------------------
+# Streamlit Secrets
+# ----------------------------
+DHAN_API_TOKEN = st.secrets["dhan_api_token"]
+DHAN_CLIENT_ID = st.secrets["dhan_client_id"]
+SUPABASE_URL = st.secrets["supabase_url"]
+SUPABASE_KEY = st.secrets["supabase_key"]
 
-st.title("Live Nifty Spot Price Candlestick Chart")
+# ----------------------------
+# Supabase client
+# ----------------------------
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Initialize empty DataFrame for OHLC
-df = pd.DataFrame(columns=["Time", "Open", "High", "Low", "Close"])
+# ----------------------------
+# Streamlit UI
+# ----------------------------
+st.title("Live Nifty Spot Price Chart")
 
-# Initialize chart
-chart = st.plotly_chart(go.Figure(), use_container_width=True)
+interval = st.selectbox("Select Candle Interval (min)", [1, 2, 3], index=0)
+st.write(f"Updating every {interval} minute(s)")
 
-# Function to fetch Nifty spot price
-def fetch_nifty_spot():
+# ----------------------------
+# Function to fetch Nifty LTP
+# ----------------------------
+def fetch_nifty_ltp():
     url = "https://api.dhan.co/v2/marketfeed/ltp"
-    payload = {"IDX_I": [NIFTY_SPOT_ID]}  # Correct segment for Nifty 50 Spot
     headers = {
-        "Accept": "application/json",
+        "accept": "application/json",
         "Content-Type": "application/json",
-        "access-token": DHAN_TOKEN,
+        "access-token": DHAN_API_TOKEN,
         "client-id": DHAN_CLIENT_ID
     }
+    payload = {
+        "NSE_INDEX": [1]  # Nifty 50 Spot
+    }
     try:
-        response = requests.post(url, json=payload, headers=headers).json()
-        price = response["data"]["IDX_I"][str(NIFTY_SPOT_ID)]["last_price"]
-        return price
+        response = requests.post(url, json=payload, headers=headers)
+        data = response.json()
+        ltp = data['data']['NSE_INDEX']['1']['last_price']
+        return ltp
     except Exception as e:
         st.error(f"Error fetching data: {e}")
         return None
 
-# Main loop
+# ----------------------------
+# Function to insert candle into Supabase
+# ----------------------------
+def store_candle(timestamp, open_price, high, low, close, volume=0):
+    supabase.table("nifty_candles").insert({
+        "timestamp": timestamp,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": volume
+    }).execute()
+
+# ----------------------------
+# Initialize chart data
+# ----------------------------
+if "candles" not in st.session_state:
+    st.session_state.candles = pd.DataFrame(columns=["timestamp","open","high","low","close"])
+
+# ----------------------------
+# Main Loop
+# ----------------------------
+placeholder = st.empty()
 while True:
-    price = fetch_nifty_spot()
-    if price is not None:
-        # Indian timezone
-        india_tz = pytz.timezone("Asia/Kolkata")
-        now = datetime.now(india_tz)
-        
-        if df.empty:
-            df = pd.DataFrame({"Time": [now], "Open": [price], "High": [price], "Low": [price], "Close": [price]})
-        else:
-            last_time = df["Time"].iloc[-1]
-            if (now - last_time).seconds < UPDATE_INTERVAL:
-                df.at[df.index[-1], "High"] = max(df.at[df.index[-1], "High"], price)
-                df.at[df.index[-1], "Low"] = min(df.at[df.index[-1], "Low"], price)
-                df.at[df.index[-1], "Close"] = price
-            else:
-                new_candle = {"Time": now, "Open": price, "High": price, "Low": price, "Close": price}
-                df = pd.concat([df, pd.DataFrame(new_candle, index=[0])], ignore_index=True)
-        
-        # Plot chart
-        fig = go.Figure(data=[go.Candlestick(
-            x=df["Time"],
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"]
-        )])
-        fig.update_layout(
-            xaxis_rangeslider_visible=False,
-            title="Nifty Spot Price",
-            xaxis_title="Time (IST)",
-            yaxis_title="Price"
-        )
-        chart.plotly_chart(fig, use_container_width=True)
-    
-    time.sleep(UPDATE_INTERVAL)
+    ltp = fetch_nifty_ltp()
+    if ltp is None:
+        time.sleep(5)
+        continue
+
+    # IST timestamp
+    tz = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(tz)
+
+    # Check if new candle needs to be created
+    if len(st.session_state.candles) == 0 or (now - st.session_state.candles["timestamp"].iloc[-1]).total_seconds() >= interval*60:
+        # New candle
+        new_candle = {
+            "timestamp": now,
+            "open": ltp,
+            "high": ltp,
+            "low": ltp,
+            "close": ltp
+        }
+        st.session_state.candles = pd.concat([st.session_state.candles, pd.DataFrame([new_candle])], ignore_index=True)
+        # Store in Supabase
+        store_candle(now.isoformat(), ltp, ltp, ltp, ltp)
+    else:
+        # Update current candle
+        idx = st.session_state.candles.index[-1]
+        st.session_state.candles.at[idx, "high"] = max(st.session_state.candles.at[idx, "high"], ltp)
+        st.session_state.candles.at[idx, "low"] = min(st.session_state.candles.at[idx, "low"], ltp)
+        st.session_state.candles.at[idx, "close"] = ltp
+        # Update in Supabase
+        supabase.table("nifty_candles").update({
+            "high": st.session_state.candles.at[idx, "high"],
+            "low": st.session_state.candles.at[idx, "low"],
+            "close": st.session_state.candles.at[idx, "close"]
+        }).eq("timestamp", st.session_state.candles.at[idx, "timestamp"].isoformat()).execute()
+
+    # Plot chart
+    placeholder.line_chart(
+        st.session_state.candles.set_index("timestamp")["close"]
+    )
+
+    # Wait for 5 seconds before next LTP fetch
+    time.sleep(5)
