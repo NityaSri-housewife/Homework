@@ -539,10 +539,10 @@ def main():
         # Load and display chart
         df = data_manager.load_from_db(hours_back)
             
-            if 'chart_data' in st.session_state:
+                if 'chart_data' in st.session_state:
                 df = st.session_state.chart_data
             
-            if not df.empty:
+                if not df.empty:
                 if 'timestamp' not in df.columns:
                     st.error("Timestamp column missing")
                     return
