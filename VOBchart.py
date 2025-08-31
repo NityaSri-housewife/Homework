@@ -77,84 +77,83 @@ class DhanAPI:
             "access-token": self.access_token,
             "client-id": self.client_id
         }
-        # Nifty 50 security ID for NSE_EQ
-        self.nifty_security_id = "13"
-        self.nifty_segment = "IDX_I"
+        # Nifty 50 security ID configurations to try
+        self.nifty_configs = [
+            {"securityId": "26000", "exchangeSegment": "NSE_EQ", "instrument": "EQUITY"},
+            {"securityId": "13", "exchangeSegment": "IDX_I", "instrument": "INDEX"}, 
+            {"securityId": "26000", "exchangeSegment": "IDX_I", "instrument": "INDEX"},
+            {"securityId": "11536", "exchangeSegment": "NSE_EQ", "instrument": "EQUITY"},
+        ]
     
-    def get_sample_data(self, hours_back=6, interval="3"):
-        """Generate sample Nifty data for testing when market is closed"""
+    def is_market_open(self):
+        """Check if market is currently open"""
         ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
         
-        # Create sample data for last trading day
-        end_date = datetime.now(ist)
-        if end_date.weekday() >= 5:  # Weekend
-            days_back = end_date.weekday() - 4
-            end_date = end_date.replace(hour=15, minute=30, second=0) - timedelta(days=days_back)
+        # Market is closed on weekends
+        if now.weekday() >= 5:  # Saturday = 5, Sunday = 6
+            return False, "Weekend - Market Closed"
+        
+        # Market hours: 9:15 AM to 3:30 PM IST
+        market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        
+        if now < market_open:
+            return False, f"Pre-Market - Opens at 9:15 AM IST"
+        elif now > market_close:
+            return False, f"Post-Market - Closed at 3:30 PM IST"
         else:
-            end_date = end_date.replace(hour=15, minute=30, second=0)
+            return True, "Market is Open"
+    
+    def get_historical_data(self, from_date, to_date, interval="1"):
+        """Fetch historical data from DhanHQ API"""
+        url = f"{self.base_url}/charts/intraday"
         
-        start_date = end_date - timedelta(hours=hours_back)
-        
-        # Generate timestamps
-        timestamps = []
-        current = start_date
-        interval_mins = int(interval)
-        
-        while current <= end_date:
-            if 9 <= current.hour < 15 or (current.hour == 15 and current.minute <= 30):
-                if current.hour == 9 and current.minute >= 15:
-                    timestamps.append(int(current.timestamp()))
-                elif current.hour > 9:
-                    timestamps.append(int(current.timestamp()))
-            current += timedelta(minutes=interval_mins)
-        
-        # Generate realistic price data with VOB formations
-        import random
-        random.seed(42)
-        
-        base_price = 25000
-        num_candles = len(timestamps)
-        
-        opens = []
-        highs = []
-        lows = []
-        closes = []
-        volumes = []
-        
-        current_price = base_price
-        
-        for i in range(num_candles):
-            # Create some trending moves to generate VOB zones
-            if i % 30 == 0:  # Every 30 candles, create a trend
-                trend = random.choice([-1, 1])
-                change_pct = trend * random.uniform(0.8, 1.5) / 100
-            else:
-                change_pct = random.uniform(-0.3, 0.3) / 100
+        for config in self.nifty_configs:
+            payload = {
+                **config,
+                "interval": interval,
+                "fromDate": from_date,
+                "toDate": to_date
+            }
             
-            open_price = current_price
-            close_price = open_price * (1 + change_pct)
-            high_price = max(open_price, close_price) * (1 + random.uniform(0, 0.3) / 100)
-            low_price = min(open_price, close_price) * (1 - random.uniform(0, 0.3) / 100)
-            
-            high_price = max(high_price, open_price, close_price)
-            low_price = min(low_price, open_price, close_price)
-            
-            opens.append(round(open_price, 2))
-            highs.append(round(high_price, 2))
-            lows.append(round(low_price, 2))
-            closes.append(round(close_price, 2))
-            volumes.append(random.randint(80000, 250000))
-            
-            current_price = close_price
+            try:
+                response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and 'open' in data and len(data['open']) > 0:
+                        st.success(f"Data fetched successfully using SecurityID: {config['securityId']}")
+                        return data
+                    else:
+                        continue
+                else:
+                    continue
+                    
+            except Exception as e:
+                continue
         
-        return {
-            'timestamp': timestamps,
-            'open': opens,
-            'high': highs,
-            'low': lows,
-            'close': closes,
-            'volume': volumes
-        }
+        return None
+    
+    def get_live_quote(self):
+        """Fetch current live quote"""
+        url = f"{self.base_url}/marketfeed/quote"
+        
+        for config in self.nifty_configs:
+            payload = {
+                config['exchangeSegment']: [config['securityId']]
+            }
+            
+            try:
+                response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and 'data' in data:
+                        return data['data'][config['exchangeSegment']][config['securityId']]
+            except:
+                continue
+        
+        return None
 
 class DataManager:
     def __init__(self, supabase: Client):
@@ -449,12 +448,12 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
 
 def main():
     st.set_page_config(page_title="Nifty VOB Chart", layout="wide")
-    st.title("🚀 Nifty 50 VOB Trading Chart")
+    st.title("Nifty 50 VOB Trading Chart")
     
-    # Current IST time
+    # Current IST time and market status
     ist = pytz.timezone('Asia/Kolkata')
     current_ist = datetime.now(ist)
-    st.info(f"📅 Current IST: {current_ist.strftime('%d-%m-%Y %H:%M:%S IST')}")
+    st.info(f"Current IST: {current_ist.strftime('%d-%m-%Y %H:%M:%S IST')}")
     
     # Initialize components
     dhan_api = DhanAPI()
@@ -462,44 +461,100 @@ def main():
     data_manager = DataManager(supabase)
     telegram_notifier = TelegramNotifier()
     
+    # Check market status
+    is_open, market_status = dhan_api.is_market_open()
+    if is_open:
+        st.success(f"Market Status: {market_status}")
+    else:
+        st.warning(f"Market Status: {market_status}")
+    
     # Sidebar
-    st.sidebar.header("⚙️ Chart Settings")
+    st.sidebar.header("Chart Settings")
     timeframes = {"1 Min": "1", "3 Min": "3", "5 Min": "5", "15 Min": "15"}
     selected_timeframe = st.sidebar.selectbox("Timeframe", list(timeframes.keys()), index=1)
     hours_back = st.sidebar.slider("Hours of Data", 1, 24, 6)
     
-    st.sidebar.header("📊 VOB Settings")
+    st.sidebar.header("VOB Settings")
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
     
-    st.sidebar.header("📱 Notifications")
+    st.sidebar.header("Notifications")
     telegram_enabled = st.sidebar.checkbox("Telegram Alerts", value=True)
     
     if telegram_enabled:
         if telegram_notifier.bot_token and telegram_notifier.chat_id:
-            st.sidebar.success("✅ Telegram configured")
+            st.sidebar.success("Telegram configured")
         else:
-            st.sidebar.warning("⚠️ Configure Telegram in secrets")
+            st.sidebar.warning("Configure Telegram in secrets")
+    
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=False)
     
     # Main content
     col1, col2 = st.columns([3, 1])
     
     with col2:
-        st.header("🎮 Controls")
+        st.header("Controls")
         
-        if st.button("📊 Use Sample Data", type="primary"):
-            with st.spinner("Generating sample data..."):
-                data = dhan_api.get_sample_data(hours_back, timeframes[selected_timeframe])
+        # Fetch data button
+        if st.button("Fetch Live Data", type="primary"):
+            with st.spinner("Fetching live data..."):
+                # Calculate date range for historical data
+                end_date = current_ist
+                
+                # Adjust for market closed times
+                if not is_open:
+                    if current_ist.weekday() >= 5:  # Weekend
+                        days_back = current_ist.weekday() - 4  # Go to Friday
+                        end_date = (current_ist - timedelta(days=days_back)).replace(hour=15, minute=30)
+                    else:
+                        end_date = current_ist.replace(hour=15, minute=30)
+                
+                start_date = end_date - timedelta(hours=hours_back)
+                
+                # Format for API
+                from_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
+                to_date_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
+                
+                st.info(f"Requesting data from {from_date_str} to {to_date_str}")
+                
+                # Fetch data
+                data = dhan_api.get_historical_data(
+                    from_date_str,
+                    to_date_str,
+                    timeframes[selected_timeframe]
+                )
+                
                 if data:
                     df = process_historical_data(data, timeframes[selected_timeframe])
                     if not df.empty:
                         st.session_state.chart_data = df
-                        st.success(f"📈 Generated {len(df)} sample candles")
-                        st.info("💡 Sample data for testing - VOB zones and alerts will work!")
+                        if data_manager.save_to_db(df):
+                            st.success(f"Fetched and saved {len(df)} candles")
+                        else:
+                            st.success(f"Fetched {len(df)} candles (DB save failed)")
                         st.rerun()
+                    else:
+                        st.warning("No data received from API")
+                else:
+                    st.error("Failed to fetch data. Check API credentials or market may be closed.")
+        
+        # Live quote section
+        st.subheader("Live Quote")
+        live_placeholder = st.empty()
+        
+        if st.button("Get Current Price") or is_open:
+            quote_data = dhan_api.get_live_quote()
+            if quote_data:
+                live_placeholder.metric(
+                    "Nifty 50",
+                    f"₹{quote_data.get('last_price', 0):.2f}",
+                    f"{quote_data.get('net_change', 0):.2f}"
+                )
+            else:
+                live_placeholder.info("Live quote not available")
     
     with col1:
-        # Display chart
+        # Display chart or status message
         if 'chart_data' in st.session_state and not st.session_state.chart_data.empty:
             df = st.session_state.chart_data
             
@@ -515,7 +570,7 @@ def main():
                 )
                 
                 if vob_zones:
-                    st.info(f"🎯 Found {len(vob_zones)} VOB zones")
+                    st.info(f"Found {len(vob_zones)} VOB zones")
             
             # Create and display chart
             fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
@@ -524,18 +579,24 @@ def main():
             # Display stats
             if len(df) > 0:
                 latest = df.iloc[-1]
-                col1, col2, col3, col4 = st.columns(4)
+                col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
                 
-                with col1:
-                    st.metric("💰 Open", f"₹{latest['open']:.2f}")
-                with col2:
-                    st.metric("🔺 High", f"₹{latest['high']:.2f}")
-                with col3:
-                    st.metric("🔻 Low", f"₹{latest['low']:.2f}")
-                with col4:
-                    st.metric("🎯 Close", f"₹{latest['close']:.2f}")
+                with col1_stats:
+                    st.metric("Open", f"₹{latest['open']:.2f}")
+                with col2_stats:
+                    st.metric("High", f"₹{latest['high']:.2f}")
+                with col3_stats:
+                    st.metric("Low", f"₹{latest['low']:.2f}")
+                with col4_stats:
+                    st.metric("Close", f"₹{latest['close']:.2f}")
         else:
-            st.info("📊 No data loaded. Click 'Use Sample Data' to start!")
-
-if __name__ == "__main__":
-    main()
+            if not is_open:
+                st.warning(f"Market is closed: {market_status}")
+                st.info("You can still fetch historical data from the last trading session using 'Fetch Live Data' button.")
+            else:
+                st.info("No data loaded. Click 'Fetch Live Data' to get current market data.")
+    
+    # Auto refresh functionality
+    if auto_refresh and is_open:
+        time.sleep(30)
+        st.rerun()
