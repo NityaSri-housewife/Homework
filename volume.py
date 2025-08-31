@@ -1,4 +1,4 @@
-import stre amlit as st
+import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -10,6 +10,23 @@ import pytz
 import numpy as np
 from supabase import create_client, Client
 import telebot
+
+# Function to check if market is open
+def is_market_open():
+    # Get current time in IST
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Check if it's a weekday (Monday=0, Friday=4)
+    if now.weekday() > 4:  # Saturday or Sunday
+        return False
+    
+    # Check if current time is within market hours
+    current_time = now.time()
+    market_open = datetime.strptime('08:30:00', '%H:%M:%S').time()
+    market_close = datetime.strptime('15:45:00', '%H:%M:%S').time()
+    
+    return market_open <= current_time <= market_close
 
 # Supabase configuration
 @st.cache_resource
@@ -279,19 +296,24 @@ def send_telegram_alert(bot, chat_id, vob_zone, current_price):
     """Send Telegram alert for VOB formation"""
     try:
         if vob_zone['type'] == 'bullish':
-            message = f"🚀 BULLISH VOB FORMED\n"
-            message += f"Base Level: {vob_zone['base_level']:.2f}\n"
-            message += f"Low Level: {vob_zone['low_level']:.2f}\n"
-            message += f"Current Price: {current_price:.2f}\n"
-            message += f"Time: {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S')}"
+            message = f"🚨 *VOB ALARM - BULLISH FORMATION* 🚨\n\n"
+            message += f"*Signal:* BUY/CALL ENTRY\n"
+            message += f"*Base Level:* {vob_zone['base_level']:.2f}\n"
+            message += f"*Low Level:* {vob_zone['low_level']:.2f}\n"
+            message += f"*Current Price:* {current_price:.2f}\n"
+            message += f"*Formation Time:* {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S IST')}\n\n"
+            message += f"*Action:* Consider long entry above base level"
         else:
-            message = f"🐻 BEARISH VOB FORMED\n"
-            message += f"Base Level: {vob_zone['base_level']:.2f}\n"
-            message += f"High Level: {vob_zone['high_level']:.2f}\n"
-            message += f"Current Price: {current_price:.2f}\n"
-            message += f"Time: {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S')}"
+            message = f"🚨 *VOB ALARM - BEARISH FORMATION* 🚨\n\n"
+            message += f"*Signal:* SELL/PUT ENTRY\n"
+            message += f"*Base Level:* {vob_zone['base_level']:.2f}\n"
+            message += f"*High Level:* {vob_zone['high_level']:.2f}\n"
+            message += f"*Current Price:* {current_price:.2f}\n"
+            message += f"*Formation Time:* {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S IST')}\n\n"
+            message += f"*Action:* Consider short entry below base level"
         
-        bot.send_message(chat_id, message)
+        # Send message with parse_mode for Markdown formatting
+        bot.send_message(chat_id, message, parse_mode="Markdown")
         return True
     except Exception as e:
         st.error(f"Error sending Telegram message: {e}")
@@ -431,6 +453,39 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
 
 def main():
     st.set_page_config(page_title="Nifty Price Action Chart", layout="wide")
+    
+    # Check if market is open
+    if not is_market_open():
+        st.title("Market is Closed")
+        st.info("The market is currently closed. Trading hours are Monday to Friday, 8:30 AM to 3:45 PM IST.")
+        
+        # Show next market opening time
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        
+        if now.weekday() >= 5:  # Weekend
+            days_until_monday = (7 - now.weekday()) % 7
+            next_market_day = now + timedelta(days=days_until_monday)
+            next_market_day = next_market_day.replace(hour=8, minute=30, second=0, microsecond=0)
+            st.write(f"Market will reopen on {next_market_day.strftime('%A, %B %d, %Y at %H:%M IST')}")
+        else:  # Weekday but outside market hours
+            if now.time() < datetime.strptime('08:30:00', '%H:%M:%S').time():
+                next_market_open = now.replace(hour=8, minute=30, second=0, microsecond=0)
+                st.write(f"Market will open today at {next_market_open.strftime('%H:%M IST')}")
+            else:
+                next_market_day = now + timedelta(days=1)
+                if next_market_day.weekday() < 5:  # Next day is a weekday
+                    next_market_day = next_market_day.replace(hour=8, minute=30, second=0, microsecond=0)
+                    st.write(f"Market will reopen tomorrow at {next_market_day.strftime('%H:%M IST')}")
+                else:  # Next day is weekend, find next Monday
+                    days_until_monday = (7 - next_market_day.weekday()) % 7
+                    next_market_day = next_market_day + timedelta(days=days_until_monday)
+                    next_market_day = next_market_day.replace(hour=8, minute=30, second=0, microsecond=0)
+                    st.write(f"Market will reopen on {next_market_day.strftime('%A, %B %d, %Y at %H:%M IST')}")
+        
+        return
+    
+    # Market is open, proceed with the app
     st.title("Nifty 50 Price Action Chart")
     
     # Initialize components
@@ -471,6 +526,9 @@ def main():
     # Telegram alerts setting
     if telegram_enabled:
         telegram_alerts = st.sidebar.checkbox("Enable Telegram Alerts", value=True)
+        # Add notification for Telegram alerts
+        if telegram_alerts:
+            st.sidebar.success("🔔 Telegram alerts ACTIVE - New VOB formations will be sent")
     else:
         telegram_alerts = False
     
@@ -567,18 +625,20 @@ def main():
                         # Only check the latest VOB zone
                         latest_zone = vob_zones[-1] if vob_zones else None
                         
-                        if latest_zone and not data_manager.check_vob_sent(
-                            latest_zone['type'], 
-                            latest_zone['start_time'], 
-                            latest_zone['base_level']
-                        ):
-                            if send_telegram_alert(telegram_bot, chat_id, latest_zone, current_price):
-                                data_manager.mark_vob_sent(
-                                    latest_zone['type'], 
-                                    latest_zone['start_time'], 
-                                    latest_zone['base_level']
-                                )
-                                st.sidebar.success(f"Sent Telegram alert for {latest_zone['type']} VOB")
+                        # Check if this VOB is new (formed in the last 5 minutes)
+                        if latest_zone and (datetime.now(pytz.UTC) - latest_zone['crossover_time'].replace(tzinfo=pytz.UTC)) < timedelta(minutes=5):
+                            if not data_manager.check_vob_sent(
+                                latest_zone['type'], 
+                                latest_zone['start_time'], 
+                                latest_zone['base_level']
+                            ):
+                                if send_telegram_alert(telegram_bot, chat_id, latest_zone, current_price):
+                                    data_manager.mark_vob_sent(
+                                        latest_zone['type'], 
+                                        latest_zone['start_time'], 
+                                        latest_zone['base_level']
+                                    )
+                                    st.sidebar.success(f"Sent Telegram alert for {latest_zone['type']} VOB")
                 
                 except Exception as e:
                     st.sidebar.error(f"Error calculating VOB: {e}")
@@ -608,13 +668,22 @@ def main():
             st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
     
     # Auto refresh functionality - only refresh once after 25 seconds
+    if auto_refresh and 'last_refresh' not in st.session_state:
+        # Initialize last refresh time
+        st.session_state.last_refresh = datetime.now()
+    
     if auto_refresh:
-        refresh_placeholder = st.empty()
-        for seconds in range(25, 0, -1):
-            refresh_placeholder.text(f"Refreshing in {seconds} seconds...")
-            time.sleep(1)
-        refresh_placeholder.empty()
-        st.rerun()
+        now = datetime.now()
+        elapsed = (now - st.session_state.last_refresh).total_seconds()
+        
+        if elapsed >= 25:
+            # Time to refresh
+            st.session_state.last_refresh = now
+            st.rerun()
+        else:
+            # Show countdown
+            remaining = 25 - int(elapsed)
+            st.sidebar.info(f"Next refresh in {remaining} seconds")
 
 if __name__ == "__main__":
     main()
