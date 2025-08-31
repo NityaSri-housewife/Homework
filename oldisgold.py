@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 from streamlit_autorefresh import st_autorefresh
+import pytz
 
 # ========== CONFIG ==========
 try:
@@ -43,6 +44,23 @@ WEIGHTS = {
     "PressureBias": 1.2,
     "PCR_Bias": 2.0
 }
+
+# ========== MARKET HOURS CHECK ==========
+def is_market_open():
+    # Get current time in IST
+    ist = pytz.timezone('Asia/Kolkata')
+    now_ist = datetime.now(ist)
+    
+    # Check if it's a weekday (Monday=0, Friday=4)
+    if now_ist.weekday() > 4:  # Saturday or Sunday
+        return False
+    
+    # Check if current time is within market hours
+    current_time = now_ist.time()
+    market_open = datetime.strptime("08:30", "%H:%M").time()
+    market_close = datetime.strptime("15:45", "%H:%M").time()
+    
+    return market_open <= current_time <= market_close
 
 # ========== HELPERS ==========
 def delta_volume_bias(price_diff, volume_diff, chg_oi_diff):
@@ -326,21 +344,59 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     else:
         st.info("No trades recorded yet.")
 
+# ========== MARKET CLOSED UI ==========
+def show_market_closed_ui():
+    st.title("Option Chain Bias Dashboard")
+    ist = pytz.timezone('Asia/Kolkata')
+    now_ist = datetime.now(ist)
+    st.subheader(f"IST Time: {now_ist.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.error("⏸️ Market is currently closed")
+    st.info("Trading hours: Monday to Friday, 8:30 AM to 3:45 PM IST")
+    
+    # Show next market open time
+    if now_ist.weekday() >= 5:  # Weekend
+        days_until_monday = (7 - now_ist.weekday()) % 7
+        next_open = now_ist.replace(hour=8, minute=30, second=0, microsecond=0) + timedelta(days=days_until_monday)
+        st.write(f"Market will reopen on {next_open.strftime('%A, %Y-%m-%d at %H:%M IST')}")
+    else:  # Weekday but outside market hours
+        if now_ist.time() < datetime.strptime("08:30", "%H:%M").time():
+            next_open = now_ist.replace(hour=8, minute=30, second=0, microsecond=0)
+            st.write(f"Market will open today at {next_open.strftime('%H:%M IST')}")
+        else:
+            next_open = now_ist.replace(hour=8, minute=30, second=0, microsecond=0) + timedelta(days=1)
+            # Skip weekend if today is Friday
+            if next_open.weekday() == 5:  # Saturday
+                next_open += timedelta(days=2)
+            elif next_open.weekday() == 6:  # Sunday
+                next_open += timedelta(days=1)
+            st.write(f"Market will reopen on {next_open.strftime('%A, %Y-%m-%d at %H:%M IST')}")
+    
+    # Still show trade logs even when market is closed
+    st.subheader("📜 Trade Log (Historical)")
+    trade_logs_df = fetch_trade_logs()
+    if not trade_logs_df.empty:
+        st.dataframe(trade_logs_df, use_container_width=True)
+    else:
+        st.info("No trades recorded yet.")
+
 # ========== MAIN ==========
 def main():
     st.set_page_config(page_title="Option Chain Bias", layout="wide")
-    st_autorefresh(interval=30 * 1000, key="data_refresh")
-
-    with st.spinner("Fetching option chain data..."):
-        try:
-            expiry = EXPIRY_OVERRIDE or fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)[0]
-            oc_data = fetch_option_chain(UNDERLYING_SCRIP, UNDERLYING_SEG, expiry)
-            underlying, df = build_dataframe_from_optionchain(oc_data)
-            atm_strike, band = determine_atm_band(df, underlying)
-            results = analyze_bias(df, underlying, atm_strike, band)
-            show_streamlit_ui(results, underlying, expiry, atm_strike)
-        except Exception as e: 
-            st.error(f"Error: {e}")
+    
+    if is_market_open():
+        st_autorefresh(interval=30 * 1000, key="data_refresh")
+        with st.spinner("Fetching option chain data..."):
+            try:
+                expiry = EXPIRY_OVERRIDE or fetch_expiry_list(UNDERLYING_SCRIP, UNDERLYING_SEG)[0]
+                oc_data = fetch_option_chain(UNDERLYING_SCRIP, UNDERLYING_SEG, expiry)
+                underlying, df = build_dataframe_from_optionchain(oc_data)
+                atm_strike, band = determine_atm_band(df, underlying)
+                results = analyze_bias(df, underlying, atm_strike, band)
+                show_streamlit_ui(results, underlying, expiry, atm_strike)
+            except Exception as e: 
+                st.error(f"Error: {e}")
+    else:
+        show_market_closed_ui()
 
 if __name__ == "__main__":
     main()
