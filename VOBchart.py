@@ -8,7 +8,50 @@ from datetime import datetime, timedelta
 import time
 import pytz
 import numpy as np
+import asyncio
 from supabase import create_client, Client
+
+# Telegram notification class
+class TelegramNotifier:
+    def __init__(self):
+        try:
+            self.bot_token = st.secrets["telegram"]["bot_token"]
+            self.chat_id = st.secrets["telegram"]["chat_id"]
+        except KeyError:
+            self.bot_token = None
+            self.chat_id = None
+    
+    def send_vob_alert(self, vob_type, price, timestamp_ist):
+        """Send VOB formation alert to Telegram"""
+        if not self.bot_token or not self.chat_id:
+            return False
+        
+        emoji = "🟢" if vob_type == "bullish" else "🔴"
+        zone_type = "Bullish" if vob_type == "bullish" else "Bearish"
+        
+        message = f"""
+{emoji} VOB ALERT - Nifty 50
+
+🎯 {zone_type} Zone Formed
+💰 Price: ₹{price:.2f}
+🕐 Time: {timestamp_ist.strftime('%d-%m-%Y %H:%M:%S IST')}
+📊 Timeframe: 3 Min Chart
+
+#NiftyVOB #{zone_type}Zone #Trading
+        """
+        
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+            payload = {
+                "chat_id": self.chat_id,
+                "text": message.strip(),
+                "parse_mode": "HTML"
+            }
+            response = requests.post(url, json=payload, timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            st.error(f"Telegram notification error: {e}")
+            return False
 
 # Supabase configuration
 @st.cache_resource
@@ -43,8 +86,23 @@ class DhanAPI:
             "fromDate": from_date,
             "toDate": to_date
         }
-        response = requests.post(url, headers=self.headers, json=payload)
-        return response.json() if response.status_code == 200 else None
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"API Error: {response.status_code} - {response.text}")
+                return None
+        except requests.exceptions.Timeout:
+            st.error("API request timed out. Please try again.")
+            return None
+        except requests.exceptions.ConnectionError:
+            st.error("Connection error. Please check your internet connection.")
+            return None
+        except Exception as e:
+            st.error(f"API request failed: {str(e)}")
+            return None
 
     def get_live_quote(self):
         """Fetch current quote data"""
@@ -119,7 +177,7 @@ def process_historical_data(data, interval):
     
     return df
 
-def calculate_vob_indicator(df, length1=5):
+def calculate_vob_indicator(df, length1=5, telegram_notifier=None, check_latest=False):
     """Calculate VOB (Volume Order Block) indicator"""
     df = df.copy()
     
@@ -145,7 +203,10 @@ def calculate_vob_indicator(df, length1=5):
     
     vob_zones = []
     
-    for idx in range(len(df)):
+    # Check only latest candle if specified
+    start_check = len(df) - 1 if check_latest else 0
+    
+    for idx in range(start_check, len(df)):
         if df.iloc[idx]['cross_up']:
             # Find lowest in last length1+13 periods
             start_idx = max(0, idx - (length1 + 13))
@@ -158,7 +219,7 @@ def calculate_vob_indicator(df, length1=5):
                 base = min(lowest_bar['open'], lowest_bar['close'])
                 atr_val = df.iloc[idx]['atr']
                 
-                if (base - lowest_val) < atr_val * 0.5:
+                if pd.notna(atr_val) and (base - lowest_val) < atr_val * 0.5:
                     base = lowest_val + atr_val * 0.5
                 
                 vob_zones.append({
@@ -166,8 +227,17 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[lowest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'low_level': lowest_val
+                    'low_level': lowest_val,
+                    'is_new': check_latest
                 })
+                
+                # Send Telegram notification for new VOB
+                if check_latest and telegram_notifier:
+                    telegram_notifier.send_vob_alert(
+                        'bullish', 
+                        df.iloc[idx]['close'],
+                        df.iloc[idx]['timestamp']
+                    )
         
         elif df.iloc[idx]['cross_dn']:
             # Find highest in last length1+13 periods
@@ -181,7 +251,7 @@ def calculate_vob_indicator(df, length1=5):
                 base = max(highest_bar['open'], highest_bar['close'])
                 atr_val = df.iloc[idx]['atr']
                 
-                if (highest_val - base) < atr_val * 0.5:
+                if pd.notna(atr_val) and (highest_val - base) < atr_val * 0.5:
                     base = highest_val - atr_val * 0.5
                 
                 vob_zones.append({
@@ -189,8 +259,17 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[highest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'high_level': highest_val
+                    'high_level': highest_val,
+                    'is_new': check_latest
                 })
+                
+                # Send Telegram notification for new VOB
+                if check_latest and telegram_notifier:
+                    telegram_notifier.send_vob_alert(
+                        'bearish', 
+                        df.iloc[idx]['close'],
+                        df.iloc[idx]['timestamp']
+                    )
     
     return vob_zones
     """Create TradingView-style candlestick chart"""
@@ -252,10 +331,16 @@ def main():
     st.set_page_config(page_title="Nifty Price Action Chart", layout="wide")
     st.title("Nifty 50 Price Action Chart")
     
+    # Display current IST time
+    ist = pytz.timezone('Asia/Kolkata')
+    current_ist = datetime.now(ist)
+    st.info(f"Current IST Time: {current_ist.strftime('%d-%m-%Y %H:%M:%S IST')}")
+    
     # Initialize components
     dhan_api = DhanAPI()
     supabase = init_supabase()
     data_manager = DataManager(supabase)
+    telegram_notifier = TelegramNotifier()
     
     # Sidebar controls
     st.sidebar.header("Chart Settings")
@@ -278,6 +363,11 @@ def main():
     st.sidebar.header("VOB Indicator")
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
+    
+    st.sidebar.header("Notifications")
+    telegram_enabled = st.sidebar.checkbox("Telegram Alerts", value=True)
+    if telegram_enabled and (not telegram_notifier.bot_token or not telegram_notifier.chat_id):
+        st.sidebar.warning("Configure Telegram settings in secrets.toml")
     
     auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
     
@@ -352,7 +442,13 @@ def main():
                 }).dropna().reset_index()
             
             # Create and display chart
-            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_sensitivity if show_vob else None)
+            fig = create_candlestick_chart(
+                df, 
+                selected_timeframe.split()[0], 
+                vob_sensitivity if show_vob else None,
+                telegram_notifier,
+                telegram_enabled
+            )
             st.plotly_chart(fig, use_container_width=True)
             
             # Display stats
