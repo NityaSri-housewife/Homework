@@ -608,13 +608,22 @@ def main():
             st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
     
     # Auto refresh functionality - only refresh once after 25 seconds
+    if auto_refresh and 'last_refresh' not in st.session_state:
+        # Initialize last refresh time
+        st.session_state.last_refresh = datetime.now()
+    
     if auto_refresh:
-        refresh_placeholder = st.empty()
-        for seconds in range(25, 0, -1):
-            refresh_placeholder.text(f"Refreshing in {seconds} seconds...")
-            time.sleep(1)
-        refresh_placeholder.empty()
-        st.rerun()
+        now = datetime.now()
+        elapsed = (now - st.session_state.last_refresh).total_seconds()
+        
+        if elapsed >= 25:
+            # Time to refresh
+            st.session_state.last_refresh = now
+            st.rerun()
+        else:
+            # Show countdown
+            remaining = 25 - int(elapsed)
+            st.sidebar.info(f"Next refresh in {remaining} seconds")
 
 if __name__ == "__main__":
     main()
