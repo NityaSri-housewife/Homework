@@ -238,11 +238,28 @@ def process_historical_data(data, interval):
     if not data or 'open' not in data:
         return pd.DataFrame()
     
-    # Convert to Indian timezone
+    # Convert to Indian timezone - handle different timestamp formats
     ist = pytz.timezone('Asia/Kolkata')
     
+    try:
+        # Try to convert timestamps
+        timestamps = pd.to_datetime(data['timestamp'], unit='s')
+        
+        # Check if already timezone-aware
+        if timestamps.dt.tz is None:
+            # Naive timestamps - assume UTC and convert to IST
+            timestamps = timestamps.dt.tz_localize('UTC').dt.tz_convert(ist)
+        else:
+            # Already timezone-aware - convert to IST
+            timestamps = timestamps.dt.tz_convert(ist)
+            
+    except Exception as e:
+        # Fallback - treat as naive timestamps in IST
+        timestamps = pd.to_datetime(data['timestamp'], unit='s')
+        timestamps = timestamps.dt.tz_localize(ist)
+    
     df = pd.DataFrame({
-        'timestamp': pd.to_datetime(data['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist),
+        'timestamp': timestamps,
         'open': data['open'],
         'high': data['high'],
         'low': data['low'],
