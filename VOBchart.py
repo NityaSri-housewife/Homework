@@ -9,6 +9,7 @@ import time
 import pytz
 import numpy as np
 from supabase import create_client, Client
+import telebot  # Add this import
 
 # Supabase configuration
 @st.cache_resource
@@ -16,6 +17,12 @@ def init_supabase():
     url = st.secrets["supabase"]["url"]
     key = st.secrets["supabase"]["key"]
     return create_client(url, key)
+
+# Telegram Bot configuration - Add to your secrets
+def init_telegram_bot():
+    token = st.secrets["telegram"]["bot_token"]
+    chat_id = st.secrets["telegram"]["chat_id"]
+    return telebot.TeleBot(token), chat_id
 
 # DhanHQ API configuration
 class DhanAPI:
@@ -59,6 +66,7 @@ class DataManager:
     def __init__(self, supabase: Client):
         self.supabase = supabase
         self.table_name = "nifty_price_data"
+        self.vob_table_name = "vob_signals"  # New table for tracking VOB signals
 
     def save_to_db(self, df):
         """Save DataFrame to Supabase"""
@@ -94,6 +102,36 @@ class DataManager:
             st.error(f"Database load error: {e}")
             # Return empty DataFrame with timestamp column on error
             return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    
+    def check_vob_sent(self, vob_type, start_time, base_level):
+        """Check if a VOB signal has already been sent"""
+        try:
+            result = self.supabase.table(self.vob_table_name)\
+                .select("*")\
+                .eq("vob_type", vob_type)\
+                .eq("start_time", start_time.isoformat())\
+                .eq("base_level", base_level)\
+                .execute()
+            
+            return len(result.data) > 0
+        except Exception as e:
+            st.error(f"Error checking VOB sent status: {e}")
+            return False
+    
+    def mark_vob_sent(self, vob_type, start_time, base_level):
+        """Mark a VOB signal as sent"""
+        try:
+            data = {
+                "vob_type": vob_type,
+                "start_time": start_time.isoformat(),
+                "base_level": base_level,
+                "sent_time": datetime.now().isoformat()
+            }
+            result = self.supabase.table(self.vob_table_name).insert(data).execute()
+            return True
+        except Exception as e:
+            st.error(f"Error marking VOB as sent: {e}")
+            return False
 
 def process_historical_data(data, interval):
     """Convert API response to DataFrame"""
@@ -207,7 +245,8 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[lowest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'low_level': lowest_val
+                    'low_level': lowest_val,
+                    'crossover_time': df.iloc[idx]['timestamp']
                 })
         
         elif df.iloc[idx]['cross_dn']:
@@ -230,10 +269,33 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[highest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'high_level': highest_val
+                    'high_level': highest_val,
+                    'crossover_time': df.iloc[idx]['timestamp']
                 })
     
     return vob_zones
+
+def send_telegram_alert(bot, chat_id, vob_zone, current_price):
+    """Send Telegram alert for VOB formation"""
+    try:
+        if vob_zone['type'] == 'bullish':
+            message = f"🚀 BULLISH VOB FORMED\n"
+            message += f"Base Level: {vob_zone['base_level']:.2f}\n"
+            message += f"Low Level: {vob_zone['low_level']:.2f}\n"
+            message += f"Current Price: {current_price:.2f}\n"
+            message += f"Time: {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S')}"
+        else:
+            message = f"🐻 BEARISH VOB FORMED\n"
+            message += f"Base Level: {vob_zone['base_level']:.2f}\n"
+            message += f"High Level: {vob_zone['high_level']:.2f}\n"
+            message += f"Current Price: {current_price:.2f}\n"
+            message += f"Time: {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        bot.send_message(chat_id, message)
+        return True
+    except Exception as e:
+        st.error(f"Error sending Telegram message: {e}")
+        return False
 
 def create_candlestick_chart(df, timeframe, vob_zones=None):
     """Create TradingView-style candlestick chart with VOB zones"""
@@ -264,49 +326,75 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
     if vob_zones:
         for zone in vob_zones:
             if zone['type'] == 'bullish':
-                # Bullish zone (green)
+                # Bullish zone (green) - Make it more visible
                 fig.add_shape(
                     type="rect",
                     x0=zone['start_time'],
                     x1=zone['end_time'],
                     y0=zone['low_level'],
                     y1=zone['base_level'],
-                    line=dict(width=0),
-                    fillcolor="rgba(0, 255, 0, 0.2)",
+                    line=dict(width=2, color='green'),
+                    fillcolor="rgba(0, 255, 0, 0.3)",  # More opaque
                     row=1, col=1
                 )
-                # Add horizontal line at base level
+                # Add horizontal line at base level - Make it thicker and more visible
                 fig.add_trace(
                     go.Scatter(
                         x=[zone['start_time'], zone['end_time']],
                         y=[zone['base_level'], zone['base_level']],
                         mode='lines',
-                        line=dict(color='green', width=2, dash='dash'),
+                        line=dict(color='green', width=4, dash='solid'),
                         name='VOB Base'
                     ),
                     row=1, col=1
                 )
+                # Add text annotation for the base level
+                fig.add_annotation(
+                    x=zone['end_time'],
+                    y=zone['base_level'],
+                    text=f"Base: {zone['base_level']:.2f}",
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor='green',
+                    font=dict(size=14, color='green'),
+                    row=1, col=1
+                )
             else:
-                # Bearish zone (red)
+                # Bearish zone (red) - Make it more visible
                 fig.add_shape(
                     type="rect",
                     x0=zone['start_time'],
                     x1=zone['end_time'],
                     y0=zone['base_level'],
                     y1=zone['high_level'],
-                    line=dict(width=0),
-                    fillcolor="rgba(255, 0, 0, 0.2)",
+                    line=dict(width=2, color='red'),
+                    fillcolor="rgba(255, 0, 0, 0.3)",  # More opaque
                     row=1, col=1
                 )
-                # Add horizontal line at base level
+                # Add horizontal line at base level - Make it thicker and more visible
                 fig.add_trace(
                     go.Scatter(
                         x=[zone['start_time'], zone['end_time']],
                         y=[zone['base_level'], zone['base_level']],
                         mode='lines',
-                        line=dict(color='red', width=2, dash='dash'),
+                        line=dict(color='red', width=4, dash='solid'),
                         name='VOB Base'
                     ),
+                    row=1, col=1
+                )
+                # Add text annotation for the base level
+                fig.add_annotation(
+                    x=zone['end_time'],
+                    y=zone['base_level'],
+                    text=f"Base: {zone['base_level']:.2f}",
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor='red',
+                    font=dict(size=14, color='red'),
                     row=1, col=1
                 )
     
@@ -350,6 +438,14 @@ def main():
     supabase = init_supabase()
     data_manager = DataManager(supabase)
     
+    # Initialize Telegram bot
+    try:
+        telegram_bot, chat_id = init_telegram_bot()
+        telegram_enabled = True
+    except:
+        st.warning("Telegram bot not configured. Check your secrets.toml file.")
+        telegram_enabled = False
+    
     # Sidebar controls
     st.sidebar.header("Chart Settings")
     
@@ -371,6 +467,12 @@ def main():
     st.sidebar.header("VOB Indicator")
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
+    
+    # Telegram alerts setting
+    if telegram_enabled:
+        telegram_alerts = st.sidebar.checkbox("Enable Telegram Alerts", value=True)
+    else:
+        telegram_alerts = False
     
     auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
     
@@ -416,7 +518,7 @@ def main():
                 nifty_data = quote_data['data'][dhan_api.nifty_segment][dhan_api.nifty_security_id]
                 live_placeholder.metric(
                     "Nifty 50",
-                    f"â‚¹{nifty_data['last_price']:.2f}",
+                    f"₹{nifty_data['last_price']:.2f}",
                     f"{nifty_data['net_change']:.2f}"
                 )
     
@@ -459,6 +561,17 @@ def main():
                 try:
                     vob_zones = calculate_vob_indicator(df, vob_sensitivity)
                     st.sidebar.info(f"Found {len(vob_zones)} VOB zones")
+                    
+                    # Send Telegram alerts for new VOB formations
+                    if telegram_enabled and telegram_alerts and vob_zones:
+                        current_price = df.iloc[-1]['close']
+                        for zone in vob_zones:
+                            # Check if we've already sent an alert for this VOB
+                            if not data_manager.check_vob_sent(zone['type'], zone['start_time'], zone['base_level']):
+                                if send_telegram_alert(telegram_bot, chat_id, zone, current_price):
+                                    data_manager.mark_vob_sent(zone['type'], zone['start_time'], zone['base_level'])
+                                    st.sidebar.success(f"Sent Telegram alert for {zone['type']} VOB")
+                
                 except Exception as e:
                     st.sidebar.error(f"Error calculating VOB: {e}")
                     vob_zones = None
@@ -475,13 +588,13 @@ def main():
                 col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
                 
                 with col1_stats:
-                    st.metric("Open", f"â‚¹{latest['open']:.2f}")
+                    st.metric("Open", f"₹{latest['open']:.2f}")
                 with col2_stats:
-                    st.metric("High", f"â‚¹{latest['high']:.2f}")
+                    st.metric("High", f"₹{latest['high']:.2f}")
                 with col3_stats:
-                    st.metric("Low", f"â‚¹{latest['low']:.2f}")
+                    st.metric("Low", f"₹{latest['low']:.2f}")
                 with col4_stats:
-                    st.metric("Close", f"â‚¹{latest['close']:.2f}")
+                    st.metric("Close", f"₹{latest['close']:.2f}")
                 
         else:
             st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
