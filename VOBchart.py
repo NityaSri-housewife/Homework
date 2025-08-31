@@ -9,30 +9,6 @@ import time
 import pytz
 import numpy as np
 from supabase import create_client, Client
-import threading
-import asyncio
-
-# Telegram Bot configuration
-class TelegramBot:
-    def __init__(self):
-        self.bot_token = st.secrets["telegram"]["bot_token"]  # Add to secrets
-        self.chat_id = st.secrets["telegram"]["chat_id"]     # Add to secrets
-        self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
-    
-    def send_message(self, message):
-        """Send message to Telegram"""
-        try:
-            url = f"{self.base_url}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": "HTML"
-            }
-            response = requests.post(url, json=payload, timeout=10)
-            return response.status_code == 200
-        except Exception as e:
-            st.error(f"Telegram error: {e}")
-            return False
 
 # Supabase configuration
 @st.cache_resource
@@ -67,16 +43,8 @@ class DhanAPI:
             "fromDate": from_date,
             "toDate": to_date
         }
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                st.error(f"API Error: {response.status_code} - {response.text}")
-                return None
-        except Exception as e:
-            st.error(f"Request failed: {e}")
-            return None
+        response = requests.post(url, headers=self.headers, json=payload)
+        return response.json() if response.status_code == 200 else None
 
     def get_live_quote(self):
         """Fetch current quote data"""
@@ -84,22 +52,13 @@ class DhanAPI:
         payload = {
             self.nifty_segment: [self.nifty_security_id]
         }
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                st.error(f"Live quote error: {response.status_code}")
-                return None
-        except Exception as e:
-            st.error(f"Live quote request failed: {e}")
-            return None
+        response = requests.post(url, headers=self.headers, json=payload)
+        return response.json() if response.status_code == 200 else None
 
 class DataManager:
     def __init__(self, supabase: Client):
         self.supabase = supabase
         self.table_name = "nifty_price_data"
-        self.vob_table = "vob_signals"  # New table for VOB tracking
 
     def save_to_db(self, df):
         """Save DataFrame to Supabase"""
@@ -113,38 +72,10 @@ class DataManager:
             st.error(f"Database error: {e}")
             return False
 
-    def save_vob_signal(self, vob_zone):
-        """Save VOB signal to prevent duplicate notifications"""
+    def load_from_db(self, hours_back=24):
+        """Load recent data from Supabase"""
         try:
-            ist = pytz.timezone('Asia/Kolkata')
-            signal_data = {
-                "signal_id": f"{vob_zone['type']}_{vob_zone['start_time']}_{vob_zone['base_level']}",
-                "signal_type": vob_zone['type'],
-                "timestamp": datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S'),
-                "base_level": vob_zone['base_level'],
-                "notified": True
-            }
-            result = self.supabase.table(self.vob_table).insert(signal_data).execute()
-            return True
-        except Exception:
-            return False
-
-    def check_vob_exists(self, vob_zone):
-        """Check if VOB signal already exists"""
-        try:
-            signal_id = f"{vob_zone['type']}_{vob_zone['start_time']}_{vob_zone['base_level']}"
-            result = self.supabase.table(self.vob_table).select("*").eq("signal_id", signal_id).execute()
-            return len(result.data) > 0
-        except Exception:
-            return False
-
-    def load_from_db(self, days_back=1):
-        """Load recent data from Supabase (max 5 days)"""
-        try:
-            # Ensure we don't exceed 5 days
-            days_back = min(days_back, 5)
-            cutoff_time = datetime.now() - timedelta(days=days_back)
-            
+            cutoff_time = datetime.now() - timedelta(hours=hours_back)
             result = self.supabase.table(self.table_name)\
                 .select("*")\
                 .gte("timestamp", cutoff_time.isoformat())\
@@ -153,27 +84,16 @@ class DataManager:
             
             if result.data:
                 df = pd.DataFrame(result.data)
+                # Convert timestamp string to datetime
                 if 'timestamp' in df.columns:
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                 return df
+            # Return empty DataFrame with timestamp column if no data
             return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         except Exception as e:
             st.error(f"Database load error: {e}")
+            # Return empty DataFrame with timestamp column on error
             return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    
-    def delete_all_data(self):
-        """Delete all data from both tables"""
-        try:
-            # Delete from price data table
-            self.supabase.table(self.table_name).delete().neq("id", "0").execute()
-            
-            # Delete from VOB signals table
-            self.supabase.table(self.vob_table).delete().neq("id", "0").execute()
-            
-            return True
-        except Exception as e:
-            st.error(f"Database deletion error: {e}")
-            return False
 
 def process_historical_data(data, interval):
     """Convert API response to DataFrame"""
@@ -184,23 +104,31 @@ def process_historical_data(data, interval):
     ist = pytz.timezone('Asia/Kolkata')
     
     try:
+        # Handle timestamp conversion with better error handling
         if 'timestamp' in data and len(data['timestamp']) > 0:
+            # Try different methods to parse timestamp
             try:
+                # First try with seconds since epoch
                 timestamps = pd.to_datetime(data['timestamp'], unit='s')
             except (ValueError, TypeError):
                 try:
+                    # If that fails, try without unit parameter
                     timestamps = pd.to_datetime(data['timestamp'])
                 except (ValueError, TypeError):
+                    # If all else fails, create a time range
+                    st.warning("Could not parse timestamps, generating time range")
                     n_periods = len(data['open'])
                     end_time = datetime.now(ist)
                     start_time = end_time - timedelta(minutes=n_periods * int(interval))
                     timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
             
+            # Convert to IST timezone
             if timestamps.tz is None:
                 timestamps = timestamps.tz_localize('UTC').tz_convert(ist)
             else:
                 timestamps = timestamps.tz_convert(ist)
         else:
+            # If no timestamps in data, create a time range
             n_periods = len(data['open'])
             end_time = datetime.now(ist)
             start_time = end_time - timedelta(minutes=n_periods * int(interval))
@@ -219,6 +147,7 @@ def process_historical_data(data, interval):
         st.error(f"Error processing historical data: {e}")
         return pd.DataFrame()
     
+    # Convert to specified timeframe if needed
     if interval != "1":
         df.set_index('timestamp', inplace=True)
         df = df.resample(f'{interval}T').agg({
@@ -259,6 +188,7 @@ def calculate_vob_indicator(df, length1=5):
     
     for idx in range(len(df)):
         if df.iloc[idx]['cross_up']:
+            # Find lowest in last length1+13 periods
             start_idx = max(0, idx - (length1 + 13))
             period_data = df.iloc[start_idx:idx+1]
             lowest_val = period_data['low'].min()
@@ -277,11 +207,11 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[lowest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'low_level': lowest_val,
-                    'current_price': df.iloc[idx]['close']
+                    'low_level': lowest_val
                 })
         
         elif df.iloc[idx]['cross_dn']:
+            # Find highest in last length1+13 periods
             start_idx = max(0, idx - (length1 + 13))
             period_data = df.iloc[start_idx:idx+1]
             highest_val = period_data['high'].max()
@@ -300,40 +230,10 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[highest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'high_level': highest_val,
-                    'current_price': df.iloc[idx]['close']
+                    'high_level': highest_val
                 })
     
     return vob_zones
-
-def send_vob_telegram_notification(telegram_bot, vob_zone, current_price):
-    """Send VOB formation notification to Telegram"""
-    ist = pytz.timezone('Asia/Kolkata')
-    current_time = datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S IST')
-    
-    if vob_zone['type'] == 'bullish':
-        emoji = "🟢"
-        zone_type = "BULLISH VOB"
-        level_info = f"Base: ₹{vob_zone['base_level']:.2f}\nLow: ₹{vob_zone['low_level']:.2f}"
-    else:
-        emoji = "🔴"
-        zone_type = "BEARISH VOB"
-        level_info = f"Base: ₹{vob_zone['base_level']:.2f}\nHigh: ₹{vob_zone['high_level']:.2f}"
-    
-    message = f"""
-{emoji} <b>NIFTY 50 - {zone_type} FORMED</b> {emoji}
-
-📊 <b>Current Price:</b> ₹{current_price:.2f}
-🎯 <b>Zone Levels:</b>
-{level_info}
-
-⏰ <b>Time:</b> {current_time}
-
-📈 <b>Signal:</b> Volume Order Block detected
-🔄 <b>Action:</b> Monitor price reaction at zone levels
-    """
-    
-    return telegram_bot.send_message(message.strip())
 
 def create_candlestick_chart(df, timeframe, vob_zones=None):
     """Create TradingView-style candlestick chart with VOB zones"""
@@ -364,6 +264,7 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
     if vob_zones:
         for zone in vob_zones:
             if zone['type'] == 'bullish':
+                # Bullish zone (green)
                 fig.add_shape(
                     type="rect",
                     x0=zone['start_time'],
@@ -374,6 +275,7 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
                     fillcolor="rgba(0, 255, 0, 0.2)",
                     row=1, col=1
                 )
+                # Add horizontal line at base level
                 fig.add_trace(
                     go.Scatter(
                         x=[zone['start_time'], zone['end_time']],
@@ -385,6 +287,7 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
                     row=1, col=1
                 )
             else:
+                # Bearish zone (red)
                 fig.add_shape(
                     type="rect",
                     x0=zone['start_time'],
@@ -395,6 +298,7 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
                     fillcolor="rgba(255, 0, 0, 0.2)",
                     row=1, col=1
                 )
+                # Add horizontal line at base level
                 fig.add_trace(
                     go.Scatter(
                         x=[zone['start_time'], zone['end_time']],
@@ -437,216 +341,104 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
     
     return fig
 
-def add_delete_button(data_manager):
-    """Add a button to delete all database records"""
-    st.sidebar.markdown("---")
-    st.sidebar.header("🗑️ Database Management")
-    
-    # Add confirmation dialog
-    if st.sidebar.button("❌ Delete All Data", help="Permanently delete all database records"):
-        # Double confirmation
-        confirm = st.sidebar.checkbox("I understand this will delete ALL data permanently")
-        if confirm:
-            if st.sidebar.button("✅ Confirm Delete", type="primary"):
-                with st.sidebar:
-                    with st.spinner("Deleting all data..."):
-                        if data_manager.delete_all_data():
-                            st.success("All data deleted successfully!")
-                            # Clear session state
-                            if 'chart_data' in st.session_state:
-                                del st.session_state['chart_data']
-                            st.rerun()
-                        else:
-                            st.error("Failed to delete data")
-
-def generate_sample_data(days_back=5, interval_minutes=5):
-    """Generate sample data for demonstration when API is not available"""
-    ist = pytz.timezone('Asia/Kolkata')
-    end_time = datetime.now(ist)
-    start_time = end_time - timedelta(days=days_back)
-    
-    # Generate timestamps
-    timestamps = pd.date_range(start=start_time, end=end_time, freq=f'{interval_minutes}T')
-    
-    # Generate price data with some randomness
-    np.random.seed(42)  # For reproducible results
-    n = len(timestamps)
-    base_price = 22000
-    volatility = 100
-    
-    # Create a trend with some noise
-    trend = np.linspace(0, 500, n)
-    noise = np.random.normal(0, volatility, n)
-    
-    # Generate OHLC data
-    prices = base_price + trend + noise
-    
-    # Create DataFrame with OHLC data
-    df = pd.DataFrame({
-        'timestamp': timestamps,
-        'open': prices,
-        'high': prices + np.random.uniform(10, 50, n),
-        'low': prices - np.random.uniform(10, 50, n),
-        'close': prices + np.random.uniform(-20, 20, n),
-        'volume': np.random.randint(1000, 10000, n)
-    })
-    
-    return df
-
 def main():
-    st.set_page_config(page_title="Nifty VOB Tracker", layout="wide")
+    st.set_page_config(page_title="Nifty Price Action Chart", layout="wide")
+    st.title("Nifty 50 Price Action Chart")
     
     # Initialize components
+    dhan_api = DhanAPI()
     supabase = init_supabase()
     data_manager = DataManager(supabase)
-    telegram_bot = TelegramBot()
     
-    # Add delete button to sidebar
-    add_delete_button(data_manager)
-    
-    # IST timezone
-    ist = pytz.timezone('Asia/Kolkata')
-    current_time_ist = datetime.now(ist)
-    
-    # Title with live time
-    st.title("🚀 Nifty 50 VOB Tracker with Telegram Alerts")
-    st.sidebar.markdown(f"**Current IST Time:** {current_time_ist.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Live price display (prominent)
-    st.markdown("---")
-    price_col1, price_col2, price_col3 = st.columns([1, 2, 1])
-    
-    with price_col2:
-        live_price_placeholder = st.empty()
-        
-        # Show sample price when market is closed
-        sample_price = 22150.75
-        sample_change = 125.50
-        
-        # Color based on change
-        color = "green" if sample_change >= 0 else "red"
-        arrow = "▲" if sample_change >= 0 else "▼"
-        
-        live_price_placeholder.markdown(f"""
-            <div style="text-align: center; padding: 20px; border: 2px solid {color}; border-radius: 10px; background-color: rgba(0,0,0,0.1);">
-                <h1 style="color: {color}; margin: 0;">NIFTY 50</h1>
-                <h1 style="color: {color}; margin: 10px 0;">₹{sample_price:.2f}</h1>
-                <h3 style="color: {color}; margin: 0;">{arrow} {sample_change:.2f}</h3>
-                <p style="margin: 5px 0; font-size: 12px;">Last Updated: {current_time_ist.strftime('%H:%M:%S IST')}</p>
-                <p style="margin: 5px 0; font-size: 10px; color: orange;">Market Closed - Showing Sample Data</p>
-            </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # Sidebar controls - UPDATED FROM HOURS TO DAYS
-    st.sidebar.header("📊 Chart Settings")
+    # Sidebar controls
+    st.sidebar.header("Chart Settings")
     
     timeframes = {
         "1 Min": "1",
         "3 Min": "3", 
         "5 Min": "5",
-        "15 Min": "15",
-        "30 Min": "30",
-        "60 Min": "60"
+        "15 Min": "15"
     }
     
     selected_timeframe = st.sidebar.selectbox(
         "Select Timeframe", 
         list(timeframes.keys()),
-        index=2  # Default to 5 min
+        index=1  # Default to 3 Min
     )
     
-    # Changed from hours to days with max of 5
-    days_back = st.sidebar.slider("Days of Data", 1, 5, 2)
+    hours_back = st.sidebar.slider("Hours of Data", 1, 24, 6)
+    
+    st.sidebar.header("VOB Indicator")
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
     
-    # Telegram settings
-    st.sidebar.header("📱 Telegram Settings")
-    telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts", value=False)
-    
-    # Auto refresh info
-    st.sidebar.header("🔄 Auto Refresh")
-    
-    # Initialize refresh control
-    if 'last_refresh' not in st.session_state:
-        st.session_state.last_refresh = 0
-    
-    current_time = time.time()
-    time_since_refresh = current_time - st.session_state.last_refresh
-    
-    # Show countdown
-    if time_since_refresh < 25:
-        remaining = 25 - time_since_refresh
-        st.sidebar.info(f"⏱️ Next refresh in: {remaining:.0f}s")
-    else:
-        st.sidebar.success("🔄 Ready to refresh")
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
     
     # Main content area
     col1, col2 = st.columns([3, 1])
     
     with col2:
-        st.subheader("🎛️ Controls")
+        st.subheader("Controls")
         
-        if st.button("📈 Load Sample Data"):
-            with st.spinner("Generating sample data..."):
-                # Update refresh timestamp
-                st.session_state.last_refresh = time.time()
+        if st.button("Fetch Fresh Data"):
+            with st.spinner("Fetching data..."):
+                # Calculate date range
+                end_date = datetime.now()
+                start_date = end_date - timedelta(hours=hours_back)
                 
-                # Generate sample data
-                interval_minutes = int(timeframes[selected_timeframe])
-                df = generate_sample_data(days_back, interval_minutes)
+                # Fetch from API
+                data = dhan_api.get_historical_data(
+                    start_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    end_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    timeframes[selected_timeframe]
+                )
                 
-                if not df.empty:
-                    st.session_state.chart_data = df
-                    data_manager.save_to_db(df)
-                    
-                    # Check for new VOB formations
-                    if show_vob and len(df) > 50:
-                        vob_zones = calculate_vob_indicator(df, vob_sensitivity)
-                        
-                        # Send Telegram notifications for new VOB zones
-                        if telegram_enabled and vob_zones:
-                            new_signals = 0
-                            for vob_zone in vob_zones[-2:]:  # Check last 2 zones only
-                                if not data_manager.check_vob_exists(vob_zone):
-                                    success = send_vob_telegram_notification(
-                                        telegram_bot, 
-                                        vob_zone, 
-                                        df.iloc[-1]['close']
-                                    )
-                                    if success:
-                                        data_manager.save_vob_signal(vob_zone)
-                                        new_signals += 1
-                            
-                            if new_signals > 0:
-                                st.success(f"📱 {new_signals} Telegram alert(s) sent!")
-                    
-                    st.success(f"✅ Generated {len(df)} sample candles")
-                    st.rerun()
+                if data:
+                    df = process_historical_data(data, timeframes[selected_timeframe])
+                    if not df.empty:
+                        # Store in session state and database
+                        st.session_state.chart_data = df
+                        data_manager.save_to_db(df)
+                        st.success(f"Fetched {len(df)} candles")
+                        st.rerun()
+                    else:
+                        st.warning("No data received")
                 else:
-                    st.warning("⚠️ Failed to generate sample data")
+                    st.error("API request failed")
         
-        # VOB Status
-        st.subheader("📊 VOB Status")
-        vob_status_placeholder = st.empty()
+        # Live quote section
+        st.subheader("Live Quote")
+        live_placeholder = st.empty()
+        
+        if st.button("Get Live Price"):
+            quote_data = dhan_api.get_live_quote()
+            if quote_data and 'data' in quote_data:
+                nifty_data = quote_data['data'][dhan_api.nifty_segment][dhan_api.nifty_security_id]
+                live_placeholder.metric(
+                    "Nifty 50",
+                    f"â‚¹{nifty_data['last_price']:.2f}",
+                    f"{nifty_data['net_change']:.2f}"
+                )
     
     with col1:
-        # Load and display chart - UPDATED TO USE DAYS_BACK
-        df = data_manager.load_from_db(days_back)
+        # Load and display chart
+        df = data_manager.load_from_db(hours_back)
         
+        # Check session state for fresh data
         if 'chart_data' in st.session_state:
             df = st.session_state.chart_data
         
         if not df.empty:
+            # Ensure we have the timestamp column and handle missing values
             if 'timestamp' not in df.columns:
-                st.error("Timestamp column missing")
+                st.error("Timestamp column is missing from the data")
                 return
             
+            # Ensure timestamp is datetime and drop any missing values
             df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
             df = df.dropna(subset=['timestamp'])
             
+            # Apply timeframe grouping if needed (only if we have enough data)
             if timeframes[selected_timeframe] != "1" and len(df) > 1:
                 try:
                     df.set_index('timestamp', inplace=True)
@@ -658,33 +450,20 @@ def main():
                         'volume': 'sum'
                     }).dropna().reset_index()
                 except Exception as e:
-                    st.error(f"Resampling error: {e}")
+                    st.error(f"Error resampling data: {e}")
+                    # If resampling fails, continue with original data
             
-            # Calculate VOB zones
+            # Calculate VOB zones if enabled
             vob_zones = None
-            if show_vob and len(df) > 50:
+            if show_vob and len(df) > 50:  # Need enough data for VOB calculation
                 try:
                     vob_zones = calculate_vob_indicator(df, vob_sensitivity)
-                    
-                    # Update VOB status
-                    with col2:
-                        if vob_zones:
-                            latest_vob = vob_zones[-1]
-                            vob_type = "🟢 BULLISH" if latest_vob['type'] == 'bullish' else "🔴 BEARISH"
-                            vob_status_placeholder.markdown(f"""
-                            **Latest VOB:** {vob_type}
-                            **Base Level:** ₹{latest_vob['base_level']:.2f}
-                            **Zones Found:** {len(vob_zones)}
-                            """)
-                        else:
-                            vob_status_placeholder.info("No VOB zones detected")
-                            
+                    st.sidebar.info(f"Found {len(vob_zones)} VOB zones")
                 except Exception as e:
-                    st.error(f"VOB calculation error: {e}")
+                    st.sidebar.error(f"Error calculating VOB: {e}")
                     vob_zones = None
             elif show_vob:
-                with col2:
-                    vob_status_placeholder.warning("Need more data for VOB")
+                st.sidebar.warning("Need more data points for VOB calculation")
             
             # Create and display chart
             fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
@@ -696,27 +475,21 @@ def main():
                 col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
                 
                 with col1_stats:
-                    st.metric("Open", f"₹{latest['open']:.2f}")
+                    st.metric("Open", f"â‚¹{latest['open']:.2f}")
                 with col2_stats:
-                    st.metric("High", f"₹{latest['high']:.2f}")
+                    st.metric("High", f"â‚¹{latest['high']:.2f}")
                 with col3_stats:
-                    st.metric("Low", f"₹{latest['low']:.2f}")
+                    st.metric("Low", f"â‚¹{latest['low']:.2f}")
                 with col4_stats:
-                    st.metric("Close", f"₹{latest['close']:.2f}")
+                    st.metric("Close", f"â‚¹{latest['close']:.2f}")
                 
         else:
-            st.info("📊 No data available. Click 'Load Sample Data' to generate sample historical data.")
+            st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
     
-    # Information about market hours
-    st.sidebar.markdown("---")
-    st.sidebar.info("""
-    **Market Hours:**
-    - Pre-open: 9:00 AM - 9:15 AM
-    - Regular: 9:15 AM - 3:30 PM
-    - Post-close: 3:40 PM - 4:00 PM
-    
-    Live data is only available during market hours.
-    """)
+    # Auto refresh functionality
+    if auto_refresh:
+        time.sleep(30)
+        st.rerun()
 
 if __name__ == "__main__":
     main()
