@@ -115,7 +115,80 @@ class DhanAPI:
         
         # If all configs fail, show error
         st.error("All Nifty security ID configurations failed. Market might be closed or API issues.")
-        return None
+    def get_sample_data(self, hours_back=6, interval="3"):
+        """Generate sample Nifty data for testing when market is closed"""
+        ist = pytz.timezone('Asia/Kolkata')
+        
+        # Create sample data for last trading day (Friday)
+        end_date = datetime.now(ist)
+        if end_date.weekday() >= 5:  # Weekend
+            days_back = end_date.weekday() - 4  # Go to Friday
+            end_date = end_date.replace(hour=15, minute=30, second=0) - timedelta(days=days_back)
+        else:
+            end_date = end_date.replace(hour=15, minute=30, second=0)
+        
+        start_date = end_date - timedelta(hours=hours_back)
+        
+        # Generate timestamps
+        timestamps = []
+        current = start_date
+        interval_mins = int(interval)
+        
+        while current <= end_date:
+            # Only include trading hours (9:15 AM to 3:30 PM)
+            if 9 <= current.hour < 15 or (current.hour == 15 and current.minute <= 30):
+                if current.hour == 9 and current.minute >= 15:
+                    timestamps.append(int(current.timestamp()))
+                elif current.hour > 9:
+                    timestamps.append(int(current.timestamp()))
+            current += timedelta(minutes=interval_mins)
+        
+        # Generate realistic Nifty price data
+        base_price = 25000
+        num_candles = len(timestamps)
+        
+        # Create price movement with some volatility
+        import random
+        random.seed(42)  # For consistent sample data
+        
+        opens = []
+        highs = []
+        lows = []
+        closes = []
+        volumes = []
+        
+        current_price = base_price
+        
+        for i in range(num_candles):
+            # Random price movement
+            change_pct = random.uniform(-0.5, 0.5) / 100  # 0.5% max change per candle
+            open_price = current_price
+            
+            # Generate OHLC
+            close_price = open_price * (1 + change_pct)
+            high_price = max(open_price, close_price) * (1 + random.uniform(0, 0.2) / 100)
+            low_price = min(open_price, close_price) * (1 - random.uniform(0, 0.2) / 100)
+            
+            # Ensure OHLC logic
+            high_price = max(high_price, open_price, close_price)
+            low_price = min(low_price, open_price, close_price)
+            
+            opens.append(round(open_price, 2))
+            highs.append(round(high_price, 2))
+            lows.append(round(low_price, 2))
+            closes.append(round(close_price, 2))
+            volumes.append(random.randint(50000, 200000))
+            
+            current_price = close_price
+        
+        return {
+            'timestamp': timestamps,
+            'open': opens,
+            'high': highs,
+            'low': lows,
+            'close': closes,
+            'volume': volumes
+        }
 
     def get_live_quote(self):
         """Fetch current quote data"""
@@ -436,6 +509,22 @@ def main():
                         st.warning("No data received from API")
                 else:
                     st.error("Failed to fetch data from all API configurations")
+        
+        # Add sample data button for testing
+        if st.button("📊 Use Sample Data (Demo)", type="secondary"):
+            with st.spinner("Generating sample data..."):
+                data = dhan_api.get_sample_data(hours_back, timeframes[selected_timeframe])
+                if data:
+                    df = process_historical_data(data, timeframes[selected_timeframe])
+                    if not df.empty:
+                        st.session_state.chart_data = df
+                        st.success(f"📈 Generated {len(df)} sample candles for testing")
+                        st.info("This is sample data for demonstration. Real data will be available during market hours.")
+                        st.rerun()
+                    else:
+                        st.error("Failed to generate sample data")
+                else:
+                    st.error("Sample data generation failed")
         
         # Live quote section
         st.subheader("Live Quote")
