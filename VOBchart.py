@@ -476,9 +476,9 @@ def main():
     st.sidebar.header("📱 Telegram Settings")
     telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts", value=True)
     
-    # Auto refresh settings
+    # Auto refresh info
     st.sidebar.header("🔄 Auto Refresh")
-    auto_refresh = st.sidebar.checkbox("Enable Auto Refresh (25s)", value=True)
+    st.sidebar.info("⏱️ Auto refreshing every 25 seconds")
     
     # Main content area
     col1, col2 = st.columns([3, 1])
@@ -610,10 +610,9 @@ def main():
             else:
                 st.info("📊 No data available. Click 'Fetch Fresh Data' to load historical data.")
     
-    # Auto refresh every 25 seconds
-    if auto_refresh:
-        time.sleep(25)
-        st.rerun()
+    # Automatic refresh every 25 seconds
+    time.sleep(25)
+    st.rerun()
 
 if __name__ == "__main__":
     main()
