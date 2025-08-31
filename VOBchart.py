@@ -478,7 +478,20 @@ def main():
     
     # Auto refresh info
     st.sidebar.header("🔄 Auto Refresh")
-    st.sidebar.info("⏱️ Auto refreshing every 25 seconds")
+    
+    # Initialize refresh control
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = 0
+    
+    current_time = time.time()
+    time_since_refresh = current_time - st.session_state.last_refresh
+    
+    # Show countdown
+    if time_since_refresh < 25:
+        remaining = 25 - time_since_refresh
+        st.sidebar.info(f"⏱️ Next refresh in: {remaining:.0f}s")
+    else:
+        st.sidebar.success("🔄 Ready to refresh")
     
     # Main content area
     col1, col2 = st.columns([3, 1])
@@ -488,6 +501,9 @@ def main():
         
         if st.button("📈 Fetch Fresh Data"):
             with st.spinner("Fetching data..."):
+                # Update refresh timestamp
+                st.session_state.last_refresh = time.time()
+                
                 end_date = datetime.now()
                 start_date = end_date - timedelta(hours=hours_back)
                 
@@ -538,82 +554,86 @@ def main():
     with col1:
         # Load and display chart
         df = data_manager.load_from_db(hours_back)
-        
-        # Check if we have session state data
-        if 'chart_data' in st.session_state:
-            df = st.session_state.chart_data
-        
-        if not df.empty:
-            if 'timestamp' not in df.columns:
-                st.error("Timestamp column missing")
-                return
             
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            df = df.dropna(subset=['timestamp'])
+            if 'chart_data' in st.session_state:
+                df = st.session_state.chart_data
             
-            if timeframes[selected_timeframe] != "1" and len(df) > 1:
-                try:
-                    df.set_index('timestamp', inplace=True)
-                    df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
-                        'open': 'first',
-                        'high': 'max',
-                        'low': 'min',
-                        'close': 'last',
-                        'volume': 'sum'
-                    }).dropna().reset_index()
-                except Exception as e:
-                    st.error(f"Resampling error: {e}")
-            
-            # Calculate VOB zones
-            vob_zones = None
-            if show_vob and len(df) > 50:
-                try:
-                    vob_zones = calculate_vob_indicator(df, vob_sensitivity)
-                    
-                    # Update VOB status
+            if not df.empty:
+                if 'timestamp' not in df.columns:
+                    st.error("Timestamp column missing")
+                    return
+                
+                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+                df = df.dropna(subset=['timestamp'])
+                
+                if timeframes[selected_timeframe] != "1" and len(df) > 1:
+                    try:
+                        df.set_index('timestamp', inplace=True)
+                        df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
+                            'open': 'first',
+                            'high': 'max',
+                            'low': 'min',
+                            'close': 'last',
+                            'volume': 'sum'
+                        }).dropna().reset_index()
+                    except Exception as e:
+                        st.error(f"Resampling error: {e}")
+                
+                # Calculate VOB zones
+                vob_zones = None
+                if show_vob and len(df) > 50:
+                    try:
+                        vob_zones = calculate_vob_indicator(df, vob_sensitivity)
+                        
+                        # Update VOB status
+                        with col2:
+                            if vob_zones:
+                                latest_vob = vob_zones[-1]
+                                vob_type = "🟢 BULLISH" if latest_vob['type'] == 'bullish' else "🔴 BEARISH"
+                                vob_status_placeholder.markdown(f"""
+                                **Latest VOB:** {vob_type}
+                                **Base Level:** ₹{latest_vob['base_level']:.2f}
+                                **Zones Found:** {len(vob_zones)}
+                                """)
+                            else:
+                                vob_status_placeholder.info("No VOB zones detected")
+                                
+                    except Exception as e:
+                        st.error(f"VOB calculation error: {e}")
+                        vob_zones = None
+                elif show_vob:
                     with col2:
-                        if vob_zones:
-                            latest_vob = vob_zones[-1]
-                            vob_type = "🟢 BULLISH" if latest_vob['type'] == 'bullish' else "🔴 BEARISH"
-                            vob_status_placeholder.markdown(f"""
-                            **Latest VOB:** {vob_type}
-                            **Base Level:** ₹{latest_vob['base_level']:.2f}
-                            **Zones Found:** {len(vob_zones)}
-                            """)
-                        else:
-                            vob_status_placeholder.info("No VOB zones detected")
-                            
-                except Exception as e:
-                    st.error(f"VOB calculation error: {e}")
-                    vob_zones = None
-            elif show_vob:
-                with col2:
-                    vob_status_placeholder.warning("Need more data for VOB")
-            
-            # Create and display chart
-            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Display stats
-            if len(df) > 0:
-                latest = df.iloc[-1]
-                col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
+                        vob_status_placeholder.warning("Need more data for VOB")
                 
-                with col1_stats:
-                    st.metric("Open", f"₹{latest['open']:.2f}")
-                with col2_stats:
-                    st.metric("High", f"₹{latest['high']:.2f}")
-                with col3_stats:
-                    st.metric("Low", f"₹{latest['low']:.2f}")
-                with col4_stats:
-                    st.metric("Close", f"₹{latest['close']:.2f}")
+                # Create and display chart
+                fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
+                st.plotly_chart(fig, use_container_width=True)
                 
-        else:
-            st.info("📊 No data available. Click 'Fetch Fresh Data' to load historical data.")
+                # Display stats
+                if len(df) > 0:
+                    latest = df.iloc[-1]
+                    col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
+                    
+                    with col1_stats:
+                        st.metric("Open", f"₹{latest['open']:.2f}")
+                    with col2_stats:
+                        st.metric("High", f"₹{latest['high']:.2f}")
+                    with col3_stats:
+                        st.metric("Low", f"₹{latest['low']:.2f}")
+                    with col4_stats:
+                        st.metric("Close", f"₹{latest['close']:.2f}")
+                    
+            else:
+                st.info("📊 No data available. Click 'Fetch Fresh Data' to load historical data.")
     
-    # Automatic refresh every 25 seconds
-    time.sleep(25)
-    st.rerun()
+    # Controlled refresh every 25 seconds (only if enough time has passed)
+    current_time = time.time()
+    if current_time - st.session_state.last_refresh >= 25:
+        st.session_state.last_refresh = current_time
+        st.rerun()
+    else:
+        # Small delay to prevent excessive CPU usage
+        time.sleep(1)
 
 if __name__ == "__main__":
     main()
