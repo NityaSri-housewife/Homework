@@ -1,4 +1,4 @@
-import stre amlit as st
+import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -9,7 +9,7 @@ import time
 import pytz
 import numpy as np
 from supabase import create_client, Client
-import telebot  # Add this import
+import telebot
 
 # Supabase configuration
 @st.cache_resource
@@ -474,7 +474,7 @@ def main():
     else:
         telegram_alerts = False
     
-    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (25s)", value=True)
     
     # Main content area
     col1, col2 = st.columns([3, 1])
@@ -502,7 +502,6 @@ def main():
                         st.session_state.chart_data = df
                         data_manager.save_to_db(df)
                         st.success(f"Fetched {len(df)} candles")
-                        st.rerun()
                     else:
                         st.warning("No data received")
                 else:
@@ -565,12 +564,21 @@ def main():
                     # Send Telegram alerts for new VOB formations
                     if telegram_enabled and telegram_alerts and vob_zones:
                         current_price = df.iloc[-1]['close']
-                        for zone in vob_zones:
-                            # Check if we've already sent an alert for this VOB
-                            if not data_manager.check_vob_sent(zone['type'], zone['start_time'], zone['base_level']):
-                                if send_telegram_alert(telegram_bot, chat_id, zone, current_price):
-                                    data_manager.mark_vob_sent(zone['type'], zone['start_time'], zone['base_level'])
-                                    st.sidebar.success(f"Sent Telegram alert for {zone['type']} VOB")
+                        # Only check the latest VOB zone
+                        latest_zone = vob_zones[-1] if vob_zones else None
+                        
+                        if latest_zone and not data_manager.check_vob_sent(
+                            latest_zone['type'], 
+                            latest_zone['start_time'], 
+                            latest_zone['base_level']
+                        ):
+                            if send_telegram_alert(telegram_bot, chat_id, latest_zone, current_price):
+                                data_manager.mark_vob_sent(
+                                    latest_zone['type'], 
+                                    latest_zone['start_time'], 
+                                    latest_zone['base_level']
+                                )
+                                st.sidebar.success(f"Sent Telegram alert for {latest_zone['type']} VOB")
                 
                 except Exception as e:
                     st.sidebar.error(f"Error calculating VOB: {e}")
@@ -599,9 +607,13 @@ def main():
         else:
             st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
     
-    # Auto refresh functionality
+    # Auto refresh functionality - only refresh once after 25 seconds
     if auto_refresh:
-        time.sleep(30)
+        refresh_placeholder = st.empty()
+        for seconds in range(25, 0, -1):
+            refresh_placeholder.text(f"Refreshing in {seconds} seconds...")
+            time.sleep(1)
+        refresh_placeholder.empty()
         st.rerun()
 
 if __name__ == "__main__":
