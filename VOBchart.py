@@ -1,4 +1,4 @@
-import strea mlit as st
+import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -10,6 +10,23 @@ import pytz
 import numpy as np
 from supabase import create_client, Client
 import telebot
+
+# Function to check if market is open
+def is_market_open():
+    # Get current time in IST
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Check if it's a weekday (Monday=0, Friday=4)
+    if now.weekday() > 4:  # Saturday or Sunday
+        return False
+    
+    # Check if current time is within market hours
+    current_time = now.time()
+    market_open = datetime.strptime('08:30:00', '%H:%M:%S').time()
+    market_close = datetime.strptime('15:45:00', '%H:%M:%S').time()
+    
+    return market_open <= current_time <= market_close
 
 # Supabase configuration
 @st.cache_resource
@@ -431,6 +448,39 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
 
 def main():
     st.set_page_config(page_title="Nifty Price Action Chart", layout="wide")
+    
+    # Check if market is open
+    if not is_market_open():
+        st.title("Market is Closed")
+        st.info("The market is currently closed. Trading hours are Monday to Friday, 8:30 AM to 3:45 PM IST.")
+        
+        # Show next market opening time
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        
+        if now.weekday() >= 5:  # Weekend
+            days_until_monday = (7 - now.weekday()) % 7
+            next_market_day = now + timedelta(days=days_until_monday)
+            next_market_day = next_market_day.replace(hour=8, minute=30, second=0, microsecond=0)
+            st.write(f"Market will reopen on {next_market_day.strftime('%A, %B %d, %Y at %H:%M IST')}")
+        else:  # Weekday but outside market hours
+            if now.time() < datetime.strptime('08:30:00', '%H:%M:%S').time():
+                next_market_open = now.replace(hour=8, minute=30, second=0, microsecond=0)
+                st.write(f"Market will open today at {next_market_open.strftime('%H:%M IST')}")
+            else:
+                next_market_day = now + timedelta(days=1)
+                if next_market_day.weekday() < 5:  # Next day is a weekday
+                    next_market_day = next_market_day.replace(hour=8, minute=30, second=0, microsecond=0)
+                    st.write(f"Market will reopen tomorrow at {next_market_day.strftime('%H:%M IST')}")
+                else:  # Next day is weekend, find next Monday
+                    days_until_monday = (7 - next_market_day.weekday()) % 7
+                    next_market_day = next_market_day + timedelta(days=days_until_monday)
+                    next_market_day = next_market_day.replace(hour=8, minute=30, second=0, microsecond=0)
+                    st.write(f"Market will reopen on {next_market_day.strftime('%A, %B %d, %Y at %H:%M IST')}")
+        
+        return
+    
+    # Market is open, proceed with the app
     st.title("Nifty 50 Price Action Chart")
     
     # Initialize components
