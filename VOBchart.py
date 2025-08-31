@@ -67,8 +67,16 @@ class DhanAPI:
             "fromDate": from_date,
             "toDate": to_date
         }
-        response = requests.post(url, headers=self.headers, json=payload)
-        return response.json() if response.status_code == 200 else None
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"API Error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            st.error(f"Request failed: {e}")
+            return None
 
     def get_live_quote(self):
         """Fetch current quote data"""
@@ -76,8 +84,16 @@ class DhanAPI:
         payload = {
             self.nifty_segment: [self.nifty_security_id]
         }
-        response = requests.post(url, headers=self.headers, json=payload)
-        return response.json() if response.status_code == 200 else None
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"Live quote error: {response.status_code}")
+                return None
+        except Exception as e:
+            st.error(f"Live quote request failed: {e}")
+            return None
 
 class DataManager:
     def __init__(self, supabase: Client):
@@ -443,11 +459,44 @@ def add_delete_button(data_manager):
                         else:
                             st.error("Failed to delete data")
 
+def generate_sample_data(days_back=5, interval_minutes=5):
+    """Generate sample data for demonstration when API is not available"""
+    ist = pytz.timezone('Asia/Kolkata')
+    end_time = datetime.now(ist)
+    start_time = end_time - timedelta(days=days_back)
+    
+    # Generate timestamps
+    timestamps = pd.date_range(start=start_time, end=end_time, freq=f'{interval_minutes}T')
+    
+    # Generate price data with some randomness
+    np.random.seed(42)  # For reproducible results
+    n = len(timestamps)
+    base_price = 22000
+    volatility = 100
+    
+    # Create a trend with some noise
+    trend = np.linspace(0, 500, n)
+    noise = np.random.normal(0, volatility, n)
+    
+    # Generate OHLC data
+    prices = base_price + trend + noise
+    
+    # Create DataFrame with OHLC data
+    df = pd.DataFrame({
+        'timestamp': timestamps,
+        'open': prices,
+        'high': prices + np.random.uniform(10, 50, n),
+        'low': prices - np.random.uniform(10, 50, n),
+        'close': prices + np.random.uniform(-20, 20, n),
+        'volume': np.random.randint(1000, 10000, n)
+    })
+    
+    return df
+
 def main():
     st.set_page_config(page_title="Nifty VOB Tracker", layout="wide")
     
     # Initialize components
-    dhan_api = DhanAPI()
     supabase = init_supabase()
     data_manager = DataManager(supabase)
     telegram_bot = TelegramBot()
@@ -470,27 +519,23 @@ def main():
     with price_col2:
         live_price_placeholder = st.empty()
         
-        # Get and display live price
-        quote_data = dhan_api.get_live_quote()
-        if quote_data and 'data' in quote_data:
-            nifty_data = quote_data['data'][dhan_api.nifty_segment][dhan_api.nifty_security_id]
-            current_price = nifty_data['last_price']
-            net_change = nifty_data['net_change']
-            
-            # Color based on change
-            color = "green" if net_change >= 0 else "red"
-            arrow = "▲" if net_change >= 0 else "▼"
-            
-            live_price_placeholder.markdown(f"""
-                <div style="text-align: center; padding: 20px; border: 2px solid {color}; border-radius: 10px; background-color: rgba(0,0,0,0.1);">
-                    <h1 style="color: {color}; margin: 0;">NIFTY 50</h1>
-                    <h1 style="color: {color}; margin: 10px 0;">₹{current_price:.2f}</h1>
-                    <h3 style="color: {color}; margin: 0;">{arrow} {net_change:.2f}</h3>
-                    <p style="margin: 5px 0; font-size: 12px;">Last Updated: {current_time_ist.strftime('%H:%M:%S IST')}</p>
-                </div>
-            """, unsafe_allow_html=True)
-        else:
-            live_price_placeholder.error("❌ Unable to fetch live price")
+        # Show sample price when market is closed
+        sample_price = 22150.75
+        sample_change = 125.50
+        
+        # Color based on change
+        color = "green" if sample_change >= 0 else "red"
+        arrow = "▲" if sample_change >= 0 else "▼"
+        
+        live_price_placeholder.markdown(f"""
+            <div style="text-align: center; padding: 20px; border: 2px solid {color}; border-radius: 10px; background-color: rgba(0,0,0,0.1);">
+                <h1 style="color: {color}; margin: 0;">NIFTY 50</h1>
+                <h1 style="color: {color}; margin: 10px 0;">₹{sample_price:.2f}</h1>
+                <h3 style="color: {color}; margin: 0;">{arrow} {sample_change:.2f}</h3>
+                <p style="margin: 5px 0; font-size: 12px;">Last Updated: {current_time_ist.strftime('%H:%M:%S IST')}</p>
+                <p style="margin: 5px 0; font-size: 10px; color: orange;">Market Closed - Showing Sample Data</p>
+            </div>
+        """, unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -509,17 +554,17 @@ def main():
     selected_timeframe = st.sidebar.selectbox(
         "Select Timeframe", 
         list(timeframes.keys()),
-        index=1
+        index=2  # Default to 5 min
     )
     
     # Changed from hours to days with max of 5
-    days_back = st.sidebar.slider("Days of Data", 1, 5, 1)
+    days_back = st.sidebar.slider("Days of Data", 1, 5, 2)
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
     
     # Telegram settings
     st.sidebar.header("📱 Telegram Settings")
-    telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts", value=True)
+    telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts", value=False)
     
     # Auto refresh info
     st.sidebar.header("🔄 Auto Refresh")
@@ -544,53 +589,44 @@ def main():
     with col2:
         st.subheader("🎛️ Controls")
         
-        if st.button("📈 Fetch Fresh Data"):
-            with st.spinner("Fetching data..."):
+        if st.button("📈 Load Sample Data"):
+            with st.spinner("Generating sample data..."):
                 # Update refresh timestamp
                 st.session_state.last_refresh = time.time()
                 
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=days_back)
+                # Generate sample data
+                interval_minutes = int(timeframes[selected_timeframe])
+                df = generate_sample_data(days_back, interval_minutes)
                 
-                data = dhan_api.get_historical_data(
-                    start_date.strftime("%Y-%m-%d %H:%M:%S"),
-                    end_date.strftime("%Y-%m-%d %H:%M:%S"),
-                    timeframes[selected_timeframe]
-                )
-                
-                if data:
-                    df = process_historical_data(data, timeframes[selected_timeframe])
-                    if not df.empty:
-                        st.session_state.chart_data = df
-                        data_manager.save_to_db(df)
+                if not df.empty:
+                    st.session_state.chart_data = df
+                    data_manager.save_to_db(df)
+                    
+                    # Check for new VOB formations
+                    if show_vob and len(df) > 50:
+                        vob_zones = calculate_vob_indicator(df, vob_sensitivity)
                         
-                        # Check for new VOB formations
-                        if show_vob and len(df) > 50:
-                            vob_zones = calculate_vob_indicator(df, vob_sensitivity)
+                        # Send Telegram notifications for new VOB zones
+                        if telegram_enabled and vob_zones:
+                            new_signals = 0
+                            for vob_zone in vob_zones[-2:]:  # Check last 2 zones only
+                                if not data_manager.check_vob_exists(vob_zone):
+                                    success = send_vob_telegram_notification(
+                                        telegram_bot, 
+                                        vob_zone, 
+                                        df.iloc[-1]['close']
+                                    )
+                                    if success:
+                                        data_manager.save_vob_signal(vob_zone)
+                                        new_signals += 1
                             
-                            # Send Telegram notifications for new VOB zones
-                            if telegram_enabled and vob_zones:
-                                new_signals = 0
-                                for vob_zone in vob_zones[-2:]:  # Check last 2 zones only
-                                    if not data_manager.check_vob_exists(vob_zone):
-                                        success = send_vob_telegram_notification(
-                                            telegram_bot, 
-                                            vob_zone, 
-                                            df.iloc[-1]['close']
-                                        )
-                                        if success:
-                                            data_manager.save_vob_signal(vob_zone)
-                                            new_signals += 1
-                                
-                                if new_signals > 0:
-                                    st.success(f"📱 {new_signals} Telegram alert(s) sent!")
-                        
-                        st.success(f"✅ Fetched {len(df)} candles")
-                        st.rerun()
-                    else:
-                        st.warning("⚠️ No data received")
+                            if new_signals > 0:
+                                st.success(f"📱 {new_signals} Telegram alert(s) sent!")
+                    
+                    st.success(f"✅ Generated {len(df)} sample candles")
+                    st.rerun()
                 else:
-                    st.error("❌ API request failed")
+                    st.warning("⚠️ Failed to generate sample data")
         
         # VOB Status
         st.subheader("📊 VOB Status")
@@ -669,16 +705,18 @@ def main():
                     st.metric("Close", f"₹{latest['close']:.2f}")
                 
         else:
-            st.info("📊 No data available. Click 'Fetch Fresh Data' to load historical data.")
+            st.info("📊 No data available. Click 'Load Sample Data' to generate sample historical data.")
     
-    # Controlled refresh every 25 seconds (only if enough time has passed)
-    current_time = time.time()
-    if current_time - st.session_state.last_refresh >= 25:
-        st.session_state.last_refresh = current_time
-        st.rerun()
-    else:
-        # Small delay to prevent excessive CPU usage
-        time.sleep(1)
+    # Information about market hours
+    st.sidebar.markdown("---")
+    st.sidebar.info("""
+    **Market Hours:**
+    - Pre-open: 9:00 AM - 9:15 AM
+    - Regular: 9:15 AM - 3:30 PM
+    - Post-close: 3:40 PM - 4:00 PM
+    
+    Live data is only available during market hours.
+    """)
 
 if __name__ == "__main__":
     main()
