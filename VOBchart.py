@@ -476,26 +476,9 @@ def main():
     st.sidebar.header("📱 Telegram Settings")
     telegram_enabled = st.sidebar.checkbox("Enable Telegram Alerts", value=True)
     
-    # 25-second timer implementation
-    st.sidebar.header("⏱️ Timer Settings")
-    if 'start_time' not in st.session_state:
-        st.session_state.start_time = time.time()
-        st.session_state.script_running = True
-    
-    elapsed_time = time.time() - st.session_state.start_time
-    remaining_time = max(0, 25 - elapsed_time)
-    
-    if remaining_time > 0:
-        st.sidebar.success(f"⏱️ Time Remaining: {remaining_time:.1f}s")
-        progress_bar = st.sidebar.progress(elapsed_time / 25.0)
-    else:
-        st.sidebar.error("⏰ Time Expired!")
-        st.session_state.script_running = False
-        st.sidebar.button("🔄 Restart Script", key="restart")
-        if st.sidebar.button("🔄 Restart Script"):
-            st.session_state.start_time = time.time()
-            st.session_state.script_running = True
-            st.rerun()
+    # Auto refresh settings
+    st.sidebar.header("🔄 Auto Refresh")
+    auto_refresh = st.sidebar.checkbox("Enable Auto Refresh (25s)", value=True)
     
     # Main content area
     col1, col2 = st.columns([3, 1])
@@ -503,7 +486,7 @@ def main():
     with col2:
         st.subheader("🎛️ Controls")
         
-        if st.button("📈 Fetch Fresh Data") and st.session_state.script_running:
+        if st.button("📈 Fetch Fresh Data"):
             with st.spinner("Fetching data..."):
                 end_date = datetime.now()
                 start_date = end_date - timedelta(hours=hours_back)
@@ -553,9 +536,8 @@ def main():
         vob_status_placeholder = st.empty()
     
     with col1:
-        if st.session_state.script_running:
-            # Load and display chart
-            df = data_manager.load_from_db(hours_back)
+        # Load and display chart
+        df = data_manager.load_from_db(hours_back)
             
             if 'chart_data' in st.session_state:
                 df = st.session_state.chart_data
@@ -627,12 +609,10 @@ def main():
                     
             else:
                 st.info("📊 No data available. Click 'Fetch Fresh Data' to load historical data.")
-        else:
-            st.error("⏰ Script execution time expired. Please restart the script.")
     
-    # Auto refresh every 5 seconds while script is running
-    if st.session_state.script_running:
-        time.sleep(5)
+    # Auto refresh every 25 seconds
+    if auto_refresh:
+        time.sleep(25)
         st.rerun()
 
 if __name__ == "__main__":
