@@ -71,38 +71,51 @@ class DhanAPI:
             "access-token": self.access_token,
             "client-id": self.client_id
         }
-        # Nifty 50 security ID for NSE_EQ
-        self.nifty_security_id = "13"
-        self.nifty_segment = "IDX_I"
+        # Nifty 50 security ID - try different options
+        self.nifty_security_id = "26000"  # Common Nifty 50 ID
+        self.nifty_segment = "NSE_EQ"
 
     def get_historical_data(self, from_date, to_date, interval="1"):
         """Fetch intraday historical data"""
         url = f"{self.base_url}/charts/intraday"
-        payload = {
-            "securityId": self.nifty_security_id,
-            "exchangeSegment": self.nifty_segment,
-            "instrument": "INDEX",
-            "interval": interval,
-            "fromDate": from_date,
-            "toDate": to_date
-        }
         
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                st.error(f"API Error: {response.status_code} - {response.text}")
-                return None
-        except requests.exceptions.Timeout:
-            st.error("API request timed out. Please try again.")
-            return None
-        except requests.exceptions.ConnectionError:
-            st.error("Connection error. Please check your internet connection.")
-            return None
-        except Exception as e:
-            st.error(f"API request failed: {str(e)}")
-            return None
+        # Try different combinations for Nifty data
+        nifty_configs = [
+            {"securityId": "26000", "exchangeSegment": "NSE_EQ", "instrument": "EQUITY"},
+            {"securityId": "13", "exchangeSegment": "IDX_I", "instrument": "INDEX"}, 
+            {"securityId": "26000", "exchangeSegment": "IDX_I", "instrument": "INDEX"},
+            {"securityId": "11536", "exchangeSegment": "NSE_EQ", "instrument": "EQUITY"},
+        ]
+        
+        for config in nifty_configs:
+            payload = {
+                **config,
+                "interval": interval,
+                "fromDate": from_date,
+                "toDate": to_date
+            }
+            
+            try:
+                st.info(f"Trying: SecurityID={config['securityId']}, Segment={config['exchangeSegment']}")
+                response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and 'open' in data and len(data['open']) > 0:
+                        st.success(f"✅ Data found with SecurityID: {config['securityId']}")
+                        return data
+                    else:
+                        st.warning(f"Empty data for SecurityID: {config['securityId']}")
+                else:
+                    st.warning(f"Error {response.status_code} for SecurityID: {config['securityId']}")
+                    
+            except Exception as e:
+                st.error(f"Exception for SecurityID {config['securityId']}: {str(e)}")
+                continue
+        
+        # If all configs fail, show error
+        st.error("All Nifty security ID configurations failed. Market might be closed or API issues.")
+        return None
 
     def get_live_quote(self):
         """Fetch current quote data"""
@@ -379,14 +392,33 @@ def main():
         
         if st.button("Fetch Fresh Data"):
             with st.spinner("Fetching data..."):
-                # Calculate date range
-                end_date = datetime.now()
+                # Calculate date range - adjust for market hours
+                ist = pytz.timezone('Asia/Kolkata')
+                end_date = datetime.now(ist)
+                
+                # If weekend or after 3:30 PM, use last trading day
+                if end_date.weekday() >= 5:  # Saturday/Sunday
+                    days_back = end_date.weekday() - 4  # Go to Friday
+                    end_date = end_date - timedelta(days=days_back)
+                elif end_date.hour >= 15 and end_date.minute >= 30:
+                    # After market close, use today's data
+                    pass
+                else:
+                    # During market hours or before, use previous day
+                    end_date = end_date - timedelta(days=1)
+                
                 start_date = end_date - timedelta(hours=hours_back)
+                
+                # Format dates for API
+                from_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
+                to_date_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
+                
+                st.info(f"Requesting data from {from_date_str} to {to_date_str} IST")
                 
                 # Fetch from API
                 data = dhan_api.get_historical_data(
-                    start_date.strftime("%Y-%m-%d %H:%M:%S"),
-                    end_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    from_date_str,
+                    to_date_str,
                     timeframes[selected_timeframe]
                 )
                 
@@ -395,13 +427,15 @@ def main():
                     if not df.empty:
                         # Store in session state and database
                         st.session_state.chart_data = df
-                        data_manager.save_to_db(df)
-                        st.success(f"Fetched {len(df)} candles")
+                        if data_manager.save_to_db(df):
+                            st.success(f"✅ Fetched and saved {len(df)} candles")
+                        else:
+                            st.success(f"✅ Fetched {len(df)} candles (DB save failed)")
                         st.rerun()
                     else:
-                        st.warning("No data received")
+                        st.warning("No data received from API")
                 else:
-                    st.error("API request failed")
+                    st.error("Failed to fetch data from all API configurations")
         
         # Live quote section
         st.subheader("Live Quote")
