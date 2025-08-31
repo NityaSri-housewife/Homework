@@ -141,6 +141,20 @@ class DataManager:
         except Exception as e:
             st.error(f"Database load error: {e}")
             return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    
+    def delete_all_data(self):
+        """Delete all data from both tables"""
+        try:
+            # Delete from price data table
+            self.supabase.table(self.table_name).delete().neq("id", "0").execute()
+            
+            # Delete from VOB signals table
+            self.supabase.table(self.vob_table).delete().neq("id", "0").execute()
+            
+            return True
+        except Exception as e:
+            st.error(f"Database deletion error: {e}")
+            return False
 
 def process_historical_data(data, interval):
     """Convert API response to DataFrame"""
@@ -404,6 +418,28 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
     
     return fig
 
+def add_delete_button(data_manager):
+    """Add a button to delete all database records"""
+    st.sidebar.markdown("---")
+    st.sidebar.header("🗑️ Database Management")
+    
+    # Add confirmation dialog
+    if st.sidebar.button("❌ Delete All Data", help="Permanently delete all database records"):
+        # Double confirmation
+        confirm = st.sidebar.checkbox("I understand this will delete ALL data permanently")
+        if confirm:
+            if st.sidebar.button("✅ Confirm Delete", type="primary"):
+                with st.sidebar:
+                    with st.spinner("Deleting all data..."):
+                        if data_manager.delete_all_data():
+                            st.success("All data deleted successfully!")
+                            # Clear session state
+                            if 'chart_data' in st.session_state:
+                                del st.session_state['chart_data']
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete data")
+
 def main():
     st.set_page_config(page_title="Nifty VOB Tracker", layout="wide")
     
@@ -412,6 +448,9 @@ def main():
     supabase = init_supabase()
     data_manager = DataManager(supabase)
     telegram_bot = TelegramBot()
+    
+    # Add delete button to sidebar
+    add_delete_button(data_manager)
     
     # IST timezone
     ist = pytz.timezone('Asia/Kolkata')
