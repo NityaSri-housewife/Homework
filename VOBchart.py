@@ -122,10 +122,13 @@ class DataManager:
         except Exception:
             return False
 
-    def load_from_db(self, hours_back=24):
-        """Load recent data from Supabase"""
+    def load_from_db(self, days_back=1):
+        """Load recent data from Supabase (max 5 days)"""
         try:
-            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            # Ensure we don't exceed 5 days
+            days_back = min(days_back, 5)
+            cutoff_time = datetime.now() - timedelta(days=days_back)
+            
             result = self.supabase.table(self.table_name)\
                 .select("*")\
                 .gte("timestamp", cutoff_time.isoformat())\
@@ -491,14 +494,16 @@ def main():
     
     st.markdown("---")
     
-    # Sidebar controls
+    # Sidebar controls - UPDATED FROM HOURS TO DAYS
     st.sidebar.header("📊 Chart Settings")
     
     timeframes = {
         "1 Min": "1",
         "3 Min": "3", 
         "5 Min": "5",
-        "15 Min": "15"
+        "15 Min": "15",
+        "30 Min": "30",
+        "60 Min": "60"
     }
     
     selected_timeframe = st.sidebar.selectbox(
@@ -507,7 +512,8 @@ def main():
         index=1
     )
     
-    hours_back = st.sidebar.slider("Hours of Data", 1, 24, 6)
+    # Changed from hours to days with max of 5
+    days_back = st.sidebar.slider("Days of Data", 1, 5, 1)
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
     
@@ -544,7 +550,7 @@ def main():
                 st.session_state.last_refresh = time.time()
                 
                 end_date = datetime.now()
-                start_date = end_date - timedelta(hours=hours_back)
+                start_date = end_date - timedelta(days=days_back)
                 
                 data = dhan_api.get_historical_data(
                     start_date.strftime("%Y-%m-%d %H:%M:%S"),
@@ -591,8 +597,8 @@ def main():
         vob_status_placeholder = st.empty()
     
     with col1:
-        # Load and display chart
-        df = data_manager.load_from_db(hours_back)
+        # Load and display chart - UPDATED TO USE DAYS_BACK
+        df = data_manager.load_from_db(days_back)
         
         if 'chart_data' in st.session_state:
             df = st.session_state.chart_data
