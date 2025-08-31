@@ -212,6 +212,21 @@ def record_signal_db(strike, signal_type, entry_price, exit_price=None, status="
         "status": status
     }).execute()
 
+# ========== DELETE HISTORY ==========
+def delete_history():
+    """Delete all data from both tables in Supabase"""
+    try:
+        # Delete from option_signals table
+        supabase.table("option_signals").delete().neq("id", "0").execute()
+        
+        # Delete from trade_logs table
+        supabase.table("trade_logs").delete().neq("id", "0").execute()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error deleting history: {e}")
+        return False
+
 # ========== TRADE LOG ==========
 def record_trade(entry_exit, signal_type, strike, price, reason):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -282,6 +297,15 @@ def show_streamlit_ui(results, underlying, expiry, atm_strike):
     ist_time = datetime.utcnow() + timedelta(hours=5, minutes=30)
     st.subheader(f"IST Time: {ist_time.strftime('%Y-%m-%d %H:%M:%S')}")
     st.subheader(f"Underlying: {underlying:.2f} | Expiry: {expiry} | ATM: {atm_strike}")
+    
+    # Add Delete History button
+    if st.button("🗑️ Delete History", type="secondary"):
+        if delete_history():
+            st.success("All history data has been deleted successfully!")
+            st.rerun()
+        else:
+            st.error("Failed to delete history data.")
+    
     if not results: 
         st.warning("No data to display.")
         return
