@@ -554,77 +554,77 @@ def main():
     with col1:
         # Load and display chart
         df = data_manager.load_from_db(hours_back)
+        
+        if 'chart_data' in st.session_state:
+            df = st.session_state.chart_data
+        
+        if not df.empty:
+            if 'timestamp' not in df.columns:
+                st.error("Timestamp column missing")
+                return
             
-            if 'chart_data' in st.session_state:
-                df = st.session_state.chart_data
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df = df.dropna(subset=['timestamp'])
             
-            if not df.empty:
-                if 'timestamp' not in df.columns:
-                    st.error("Timestamp column missing")
-                    return
-                
-                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-                df = df.dropna(subset=['timestamp'])
-                
-                if timeframes[selected_timeframe] != "1" and len(df) > 1:
-                    try:
-                        df.set_index('timestamp', inplace=True)
-                        df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
-                            'open': 'first',
-                            'high': 'max',
-                            'low': 'min',
-                            'close': 'last',
-                            'volume': 'sum'
-                        }).dropna().reset_index()
-                    except Exception as e:
-                        st.error(f"Resampling error: {e}")
-                
-                # Calculate VOB zones
-                vob_zones = None
-                if show_vob and len(df) > 50:
-                    try:
-                        vob_zones = calculate_vob_indicator(df, vob_sensitivity)
-                        
-                        # Update VOB status
-                        with col2:
-                            if vob_zones:
-                                latest_vob = vob_zones[-1]
-                                vob_type = "🟢 BULLISH" if latest_vob['type'] == 'bullish' else "🔴 BEARISH"
-                                vob_status_placeholder.markdown(f"""
-                                **Latest VOB:** {vob_type}
-                                **Base Level:** ₹{latest_vob['base_level']:.2f}
-                                **Zones Found:** {len(vob_zones)}
-                                """)
-                            else:
-                                vob_status_placeholder.info("No VOB zones detected")
-                                
-                    except Exception as e:
-                        st.error(f"VOB calculation error: {e}")
-                        vob_zones = None
-                elif show_vob:
+            if timeframes[selected_timeframe] != "1" and len(df) > 1:
+                try:
+                    df.set_index('timestamp', inplace=True)
+                    df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
+                        'open': 'first',
+                        'high': 'max',
+                        'low': 'min',
+                        'close': 'last',
+                        'volume': 'sum'
+                    }).dropna().reset_index()
+                except Exception as e:
+                    st.error(f"Resampling error: {e}")
+            
+            # Calculate VOB zones
+            vob_zones = None
+            if show_vob and len(df) > 50:
+                try:
+                    vob_zones = calculate_vob_indicator(df, vob_sensitivity)
+                    
+                    # Update VOB status
                     with col2:
-                        vob_status_placeholder.warning("Need more data for VOB")
+                        if vob_zones:
+                            latest_vob = vob_zones[-1]
+                            vob_type = "🟢 BULLISH" if latest_vob['type'] == 'bullish' else "🔴 BEARISH"
+                            vob_status_placeholder.markdown(f"""
+                            **Latest VOB:** {vob_type}
+                            **Base Level:** ₹{latest_vob['base_level']:.2f}
+                            **Zones Found:** {len(vob_zones)}
+                            """)
+                        else:
+                            vob_status_placeholder.info("No VOB zones detected")
+                            
+                except Exception as e:
+                    st.error(f"VOB calculation error: {e}")
+                    vob_zones = None
+            elif show_vob:
+                with col2:
+                    vob_status_placeholder.warning("Need more data for VOB")
+            
+            # Create and display chart
+            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Display stats
+            if len(df) > 0:
+                latest = df.iloc[-1]
+                col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
                 
-                # Create and display chart
-                fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
-                st.plotly_chart(fig, use_container_width=True)
+                with col1_stats:
+                    st.metric("Open", f"₹{latest['open']:.2f}")
+                with col2_stats:
+                    st.metric("High", f"₹{latest['high']:.2f}")
+                with col3_stats:
+                    st.metric("Low", f"₹{latest['low']:.2f}")
+                with col4_stats:
+                    st.metric("Close", f"₹{latest['close']:.2f}")
                 
-                # Display stats
-                if len(df) > 0:
-                    latest = df.iloc[-1]
-                    col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
-                    
-                    with col1_stats:
-                        st.metric("Open", f"₹{latest['open']:.2f}")
-                    with col2_stats:
-                        st.metric("High", f"₹{latest['high']:.2f}")
-                    with col3_stats:
-                        st.metric("Low", f"₹{latest['low']:.2f}")
-                    with col4_stats:
-                        st.metric("Close", f"₹{latest['close']:.2f}")
-                    
-            else:
-                st.info("📊 No data available. Click 'Fetch Fresh Data' to load historical data.")
+        else:
+            st.info("📊 No data available. Click 'Fetch Fresh Data' to load historical data.")
     
     # Controlled refresh every 25 seconds (only if enough time has passed)
     current_time = time.time()
