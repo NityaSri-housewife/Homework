@@ -73,6 +73,10 @@ class NiftyChartApp:
         self.vob_zones = []  # Store active VOB zones
         self.option_chain_data = None
         self.oi_sentiment = None
+        self.atm_strike = None
+        self.ce_ltp = None
+        self.pe_ltp = None
+        self.underlying_price = None
         
         # Initialize session state for tracking sent alerts
         if 'sent_vob_alerts' not in st.session_state:
@@ -305,6 +309,9 @@ class NiftyChartApp:
         # Create a unique identifier for this RSI reading
         rsi_id = f"{latest_rsi:.1f}_{datetime.now(self.ist).strftime('%Y-%m-%d %H:%M')}"
         
+        # Get option chain info for alert message
+        option_info = self.get_option_chain_info_for_alert()
+        
         # Check for overbought condition (RSI > 70)
         if latest_rsi > 70 and prev_rsi <= 70:
             condition = "Overbought"
@@ -315,6 +322,7 @@ class NiftyChartApp:
 📈 RSI: {latest_rsi:.2f} (Above 70)
 ⏰ Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
 📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
+{option_info}
 
 ⚠️ Potential reversal or pullback expected.
 Consider taking profits or implementing protective strategies."""
@@ -333,6 +341,7 @@ Consider taking profits or implementing protective strategies."""
 📈 RSI: {latest_rsi:.2f} (Below 30)
 ⏰ Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
 📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
+{option_info}
 
 ⚠️ Potential bounce or reversal expected.
 Consider looking for buying opportunities."""
@@ -345,6 +354,21 @@ Consider looking for buying opportunities."""
         if len(st.session_state.sent_rsi_alerts) > 20:
             alerts_list = list(st.session_state.sent_rsi_alerts)
             st.session_state.sent_rsi_alerts = set(alerts_list[-10:])
+    
+    def get_option_chain_info_for_alert(self):
+        """Get formatted option chain information for alerts"""
+        if not self.atm_strike or not self.underlying_price:
+            return ""
+        
+        info = f"🎯 ATM Strike: {self.atm_strike}\n"
+        info += f"💰 Spot Price: ₹{self.underlying_price:.2f}\n"
+        
+        if self.ce_ltp:
+            info += f"📈 CE LTP: ₹{self.ce_ltp:.2f}\n"
+        if self.pe_ltp:
+            info += f"📉 PE LTP: ₹{self.pe_ltp:.2f}\n"
+            
+        return info
     
     def check_new_vob_zones(self, current_zones, rsi_data=None):
         """Check for new VOB zones and send Telegram alerts only for new formations"""
@@ -366,12 +390,17 @@ Consider looking for buying opportunities."""
                     zone_type = zone['type'].title()
                     signal_time_str = zone['signal_time'].strftime("%H:%M:%S")
                     
+                    # Get option chain info
+                    option_info = self.get_option_chain_info_for_alert()
+                    
                     if zone['type'] == 'bullish':
                         price_info = f"Base: ₹{zone['base_price']:.2f}\nSupport: ₹{zone['lowest_price']:.2f}"
                         emoji = "🟢"
+                        trade_recommendation = f"📈 Consider CE: ₹{self.ce_ltp:.2f}" if self.ce_ltp else ""
                     else:
                         price_info = f"Base: ₹{zone['base_price']:.2f}\nResistance: ₹{zone['highest_price']:.2f}"
                         emoji = "🔴"
+                        trade_recommendation = f"📉 Consider PE: ₹{self.pe_ltp:.2f}" if self.pe_ltp else ""
                     
                     # Get current RSI value if available
                     rsi_info = ""
@@ -385,10 +414,11 @@ Consider looking for buying opportunities."""
 🔥 Type: {zone_type} VOB
 ⏰ Time: {signal_time_str} IST
 {rsi_info}📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
-
+{option_info}
 💰 Price Levels:
 {price_info}
 
+{trade_recommendation}
 📈 Trade accordingly!"""
                     
                     if self.send_telegram_message(message):
@@ -438,17 +468,42 @@ Consider looking for buying opportunities."""
             resp = requests.post("https://api.dhan.co/v2/optionchain", 
                                headers=headers, json=data, timeout=10)
             resp.raise_for_status()
-            return resp.json().get("data", {}).get("oc", {})
+            return resp.json().get("data", {})
         except Exception as e:
             st.warning(f"Error fetching option chain: {e}")
             return {}
     
+    def get_atm_strike_and_ltp(self, oc_data):
+        """Find ATM strike and its CE/PE LTP"""
+        if not oc_data:
+            return None, None, None, None, None
+        
+        underlying_price = oc_data.get("underlying_price")
+        oc = oc_data.get("oc", {})
+        
+        if not oc:
+            return None, None, None, None, None
+
+        # Find nearest strike to underlying price
+        try:
+            atm_strike = min(oc.keys(), key=lambda x: abs(float(x) - underlying_price))
+            atm_data = oc[atm_strike]
+            ce_ltp = atm_data.get("ce", {}).get("ltp")
+            pe_ltp = atm_data.get("pe", {}).get("ltp")
+            
+            return underlying_price, atm_strike, ce_ltp, pe_ltp
+        except (ValueError, KeyError):
+            return None, None, None, None, None
+    
     def calculate_oi_trend(self, option_chain):
         """Calculate total OI change Call vs Put"""
+        if not option_chain or 'oc' not in option_chain:
+            return 0, 0, "N/A"
+            
         total_ce_change = 0
         total_pe_change = 0
 
-        for strike, contracts in option_chain.items():
+        for strike, contracts in option_chain['oc'].items():
             ce = contracts.get("ce")
             pe = contracts.get("pe")
 
@@ -786,10 +841,17 @@ Consider looking for buying opportunities."""
                         if self.option_chain_data:
                             ce_oi, pe_oi, bias = self.calculate_oi_trend(self.option_chain_data)
                             self.oi_sentiment = bias
+                            
+                            # Get ATM strike and LTPs
+                            self.underlying_price, self.atm_strike, self.ce_ltp, self.pe_ltp = self.get_atm_strike_and_ltp(self.option_chain_data)
                 except Exception as e:
                     st.warning(f"Option chain error: {str(e)}")
                     self.option_chain_data = None
                     self.oi_sentiment = None
+                    self.atm_strike = None
+                    self.ce_ltp = None
+                    self.pe_ltp = None
+                    self.underlying_price = None
         
         # Calculate VOB zones if enabled and sufficient data
         if vob_enabled and not df.empty and len(df) >= 18:
@@ -838,7 +900,9 @@ Consider looking for buying opportunities."""
                 st.metric("Low", f"₹{df['low'].min():.2f}")
             
             with col4:
-                if vob_zones:
+                if self.atm_strike:
+                    st.metric("ATM Strike", self.atm_strike)
+                elif vob_zones:
                     st.metric("Active VOB Zones", len(vob_zones))
                 elif self.oi_sentiment:
                     st.metric("OI Sentiment", self.oi_sentiment.split()[0])
@@ -847,6 +911,25 @@ Consider looking for buying opportunities."""
                     st.metric("Ultimate RSI", f"{latest_rsi:.2f}")
                 else:
                     st.metric("Volume", f"{df['volume'].sum():,}")
+        
+        # Option Chain Info
+        if oi_enabled and self.atm_strike:
+            st.subheader("🎯 Option Chain Info")
+            cols = st.columns(3)
+            
+            with cols[0]:
+                st.metric("Spot Price", f"₹{self.underlying_price:.2f}" if self.underlying_price else "N/A")
+            with cols[1]:
+                st.metric("ATM Strike", self.atm_strike)
+            with cols[2]:
+                st.metric("OI Sentiment", self.oi_sentiment or "N/A")
+            
+            if self.ce_ltp and self.pe_ltp:
+                cols2 = st.columns(2)
+                with cols2[0]:
+                    st.metric("CE LTP", f"₹{self.ce_ltp:.2f}")
+                with cols2[1]:
+                    st.metric("PE LTP", f"₹{self.pe_ltp:.2f}")
         
         # VOB Zone Summary
         if vob_enabled and vob_zones:
