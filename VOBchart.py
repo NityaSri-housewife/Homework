@@ -271,6 +271,8 @@ class NiftyChartApp:
         
         # Update last check time
         st.session_state.last_alert_check = datetime.now(self.ist)
+    
+    def save_to_supabase(self, df, interval):
         """Save data to Supabase"""
         if df.empty:
             return
