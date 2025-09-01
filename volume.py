@@ -68,12 +68,19 @@ class NiftyChartApp:
         self.setup_supabase()
         self.ist = pytz.timezone('Asia/Kolkata')
         self.nifty_security_id = "13"  # Nifty 50 security ID for DhanHQ
+        self.nifty_option_id = 13  # Nifty 50 option ID
+        self.segment = "IDX_I"  # Index segment
         self.vob_zones = []  # Store active VOB zones
+        self.option_chain_data = None
+        self.oi_sentiment = None
+        
         # Initialize session state for tracking sent alerts
         if 'sent_vob_alerts' not in st.session_state:
             st.session_state.sent_vob_alerts = set()
         if 'last_alert_check' not in st.session_state:
             st.session_state.last_alert_check = None
+        if 'sent_oi_alerts' not in st.session_state:
+            st.session_state.sent_oi_alerts = set()
         
     def setup_secrets(self):
         """Setup API credentials from Streamlit secrets"""
@@ -316,6 +323,91 @@ class NiftyChartApp:
         
         # Update last check time
         st.session_state.last_alert_check = datetime.now(self.ist)
+    
+    def get_nearest_expiry(self):
+        """Fetch nearest expiry for Nifty"""
+        try:
+            headers = self.get_dhan_headers()
+            data = {"UnderlyingScrip": self.nifty_option_id, "UnderlyingSeg": self.segment}
+            resp = requests.post("https://api.dhan.co/v2/optionchain/expirylist", 
+                               headers=headers, json=data, timeout=10)
+            resp.raise_for_status()
+            expiries = resp.json().get("data", [])
+            return expiries[0] if expiries else None
+        except Exception as e:
+            st.warning(f"Error fetching expiry: {e}")
+            return None
+    
+    def fetch_option_chain(self, expiry):
+        """Fetch option chain for Nifty"""
+        try:
+            headers = self.get_dhan_headers()
+            data = {
+                "UnderlyingScrip": self.nifty_option_id, 
+                "UnderlyingSeg": self.segment, 
+                "Expiry": expiry
+            }
+            resp = requests.post("https://api.dhan.co/v2/optionchain", 
+                               headers=headers, json=data, timeout=10)
+            resp.raise_for_status()
+            return resp.json().get("data", {}).get("oc", {})
+        except Exception as e:
+            st.warning(f"Error fetching option chain: {e}")
+            return {}
+    
+    def calculate_oi_trend(self, option_chain):
+        """Calculate total OI change Call vs Put"""
+        total_ce_change = 0
+        total_pe_change = 0
+
+        for strike, contracts in option_chain.items():
+            ce = contracts.get("ce")
+            pe = contracts.get("pe")
+
+            if ce:
+                change_oi = ce.get("oi", 0) - ce.get("previous_oi", 0)
+                total_ce_change += change_oi
+
+            if pe:
+                change_oi = pe.get("oi", 0) - pe.get("previous_oi", 0)
+                total_pe_change += change_oi
+
+        # Ratio logic
+        if total_pe_change > 1.3 * total_ce_change:
+            sentiment = "Bullish 📈 (Put OI rising faster)"
+        elif total_ce_change > 1.3 * total_pe_change:
+            sentiment = "Bearish 📉 (Call OI rising faster)"
+        else:
+            sentiment = "Neutral ⚖️"
+
+        return total_ce_change, total_pe_change, sentiment
+    
+    def check_oi_sentiment_change(self, current_sentiment):
+        """Check for OI sentiment changes and send alerts"""
+        if not current_sentiment:
+            return
+        
+        # Create a unique identifier for this sentiment reading
+        sentiment_id = f"{current_sentiment}_{datetime.now(self.ist).strftime('%Y-%m-%d %H:%M')}"
+        
+        # Only send alert if this sentiment hasn't been alerted before
+        if sentiment_id not in st.session_state.sent_oi_alerts:
+            message = f"""📊 Nifty OI Sentiment Update
+
+Current Sentiment: {current_sentiment}
+Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
+
+Based on option chain analysis of nearest expiry."""
+            
+            if self.send_telegram_message(message):
+                st.success(f"Telegram alert sent for OI sentiment: {current_sentiment}")
+                # Mark this sentiment as alerted
+                st.session_state.sent_oi_alerts.add(sentiment_id)
+                
+                # Clean up old alert records
+                if len(st.session_state.sent_oi_alerts) > 20:
+                    alerts_list = list(st.session_state.sent_oi_alerts)
+                    st.session_state.sent_oi_alerts = set(alerts_list[-10:])
     
     def save_to_supabase(self, df, interval):
         """Save data to Supabase"""
@@ -568,15 +660,23 @@ class NiftyChartApp:
             rsi_length = st.slider("RSI Length", 5, 30, 14)
             rsi_smooth = st.slider("RSI Smoothing", 5, 30, 14)
             
+            # Option Chain Settings
+            st.subheader("Option Chain Analysis")
+            oi_enabled = st.checkbox("Enable OI Analysis", value=True)
+            oi_alert_enabled = st.checkbox("Enable OI Alerts", 
+                                         value=bool(self.telegram_bot_token))
+            
             # Telegram Settings
             st.subheader("Telegram Alerts")
             telegram_enabled = st.checkbox("Enable Telegram Alerts", 
                                          value=bool(self.telegram_bot_token))
             
             if telegram_enabled:
-                st.info(f"Alerts tracked: {len(st.session_state.sent_vob_alerts)}")
+                st.info(f"VOB Alerts tracked: {len(st.session_state.sent_vob_alerts)}")
+                st.info(f"OI Alerts tracked: {len(st.session_state.sent_oi_alerts)}")
                 if st.button("Clear Alert History"):
                     st.session_state.sent_vob_alerts.clear()
+                    st.session_state.sent_oi_alerts.clear()
                     st.success("Alert history cleared!")
                     st.rerun()
             
@@ -639,6 +739,25 @@ class NiftyChartApp:
                     st.warning(f"RSI calculation error: {str(e)}")
                     rsi_data = None
         
+        # Fetch option chain data if enabled
+        if oi_enabled:
+            with st.spinner("Fetching option chain data..."):
+                try:
+                    expiry = self.get_nearest_expiry()
+                    if expiry:
+                        self.option_chain_data = self.fetch_option_chain(expiry)
+                        if self.option_chain_data:
+                            ce_oi, pe_oi, bias = self.calculate_oi_trend(self.option_chain_data)
+                            self.oi_sentiment = bias
+                            
+                            # Check for OI sentiment changes and send alerts
+                            if oi_alert_enabled and telegram_enabled:
+                                self.check_oi_sentiment_change(bias)
+                except Exception as e:
+                    st.warning(f"Option chain error: {str(e)}")
+                    self.option_chain_data = None
+                    self.oi_sentiment = None
+        
         # Display metrics
         if not df.empty:
             latest = df.iloc[-1]
@@ -662,6 +781,8 @@ class NiftyChartApp:
             with col4:
                 if vob_zones:
                     st.metric("Active VOB Zones", len(vob_zones))
+                elif self.oi_sentiment:
+                    st.metric("OI Sentiment", self.oi_sentiment.split()[0])
                 elif rsi_data is not None:
                     latest_rsi = rsi_data.iloc[-1]['Ultimate_RSI']
                     st.metric("Ultimate RSI", f"{latest_rsi:.2f}")
@@ -706,6 +827,26 @@ class NiftyChartApp:
                 st.metric("Status", rsi_status)
             with col3:
                 st.metric("Trend", rsi_trend)
+        
+        # OI Analysis Summary
+        if oi_enabled and self.oi_sentiment and self.option_chain_data:
+            st.subheader("📊 Option Chain Analysis")
+            
+            ce_oi, pe_oi, bias = self.calculate_oi_trend(self.option_chain_data)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Call OI Change", f"{ce_oi:,}")
+            with col2:
+                st.metric("Put OI Change", f"{pe_oi:,}")
+            with col3:
+                st.metric("Market Sentiment", bias)
+            
+            # Display OI ratio
+            if pe_oi != 0:
+                oi_ratio = ce_oi / pe_oi
+                st.progress(min(oi_ratio, 2.0) / 2.0, 
+                           text=f"Call/Put OI Ratio: {oi_ratio:.2f}")
         
         # Create and display chart
         if not df.empty:
