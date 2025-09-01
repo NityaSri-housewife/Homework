@@ -3,379 +3,327 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
-import json
 from datetime import datetime, timedelta
-import time
 import pytz
-import numpy as np
 from supabase import create_client, Client
+import json
+import time
 
-# Supabase configuration
-@st.cache_resource
-def init_supabase():
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["key"]
-    return create_client(url, key)
+# Streamlit configuration
+st.set_page_config(
+    page_title="Nifty Price Action Chart",
+    page_icon="📈",
+    layout="wide"
+)
 
-# DhanHQ API configuration
-class DhanAPI:
+class NiftyChartApp:
     def __init__(self):
-        self.base_url = "https://api.dhan.co/v2"
-        self.access_token = st.secrets["dhan"]["access_token"]
-        self.client_id = st.secrets["dhan"]["client_id"]
-        self.headers = {
-            "Content-Type": "application/json",
-            "access-token": self.access_token,
-            "client-id": self.client_id
+        self.setup_secrets()
+        self.setup_supabase()
+        self.ist = pytz.timezone('Asia/Kolkata')
+        self.nifty_security_id = "13"  # Nifty 50 security ID for DhanHQ
+        
+    def setup_secrets(self):
+        """Setup API credentials from Streamlit secrets"""
+        try:
+            self.dhan_token = st.secrets["dhan"]["access_token"]
+            self.dhan_client_id = st.secrets["dhan"]["client_id"]
+            self.supabase_url = st.secrets["supabase"]["url"]
+            self.supabase_key = st.secrets["supabase"]["anon_key"]
+        except KeyError as e:
+            st.error(f"Missing secret: {e}")
+            st.stop()
+    
+    def setup_supabase(self):
+        """Initialize Supabase client"""
+        try:
+            self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+        except Exception as e:
+            st.error(f"Supabase connection error: {e}")
+            st.stop()
+    
+    def get_dhan_headers(self):
+        """Get headers for DhanHQ API calls"""
+        return {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'access-token': self.dhan_token,
+            'client-id': self.dhan_client_id
         }
-        # Nifty 50 security ID for NSE_EQ
-        self.nifty_security_id = "13"
-        self.nifty_segment = "IDX_I"
-
-    def get_historical_data(self, from_date, to_date, interval="1"):
-        """Fetch intraday historical data"""
-        url = f"{self.base_url}/charts/intraday"
+    
+    def fetch_intraday_data(self, interval="3", days_back=5):
+        """Fetch intraday data from DhanHQ API"""
+        end_date = datetime.now(self.ist)
+        start_date = end_date - timedelta(days=days_back)
+        
+        # Format dates for API
+        from_date = start_date.strftime("%Y-%m-%d 09:15:00")
+        to_date = end_date.strftime("%Y-%m-%d 15:30:00")
+        
         payload = {
             "securityId": self.nifty_security_id,
-            "exchangeSegment": self.nifty_segment,
+            "exchangeSegment": "IDX_I",
             "instrument": "INDEX",
             "interval": interval,
+            "oi": False,
             "fromDate": from_date,
             "toDate": to_date
         }
-        response = requests.post(url, headers=self.headers, json=payload)
-        return response.json() if response.status_code == 200 else None
-
-    def get_live_quote(self):
-        """Fetch current quote data"""
-        url = f"{self.base_url}/marketfeed/quote"
-        payload = {
-            self.nifty_segment: [self.nifty_security_id]
-        }
-        response = requests.post(url, headers=self.headers, json=payload)
-        return response.json() if response.status_code == 200 else None
-
-class DataManager:
-    def __init__(self, supabase: Client):
-        self.supabase = supabase
-        self.table_name = "nifty_price_data"
-
-    def save_to_db(self, df):
-        """Save DataFrame to Supabase"""
+        
         try:
-            df_copy = df.copy()
-            df_copy['timestamp'] = df_copy['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            data = df_copy.to_dict('records')
-            result = self.supabase.table(self.table_name).upsert(data).execute()
-            return True
+            response = requests.post(
+                "https://api.dhan.co/v2/charts/intraday",
+                headers=self.get_dhan_headers(),
+                json=payload,
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"API Error: {e}")
+            return None
+    
+    def process_data(self, api_data):
+        """Process API data into DataFrame"""
+        if not api_data or 'open' not in api_data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame({
+            'timestamp': api_data['timestamp'],
+            'open': api_data['open'],
+            'high': api_data['high'],
+            'low': api_data['low'],
+            'close': api_data['close'],
+            'volume': api_data['volume']
+        })
+        
+        # Convert timestamp to IST datetime
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
+        df['datetime'] = df['datetime'].dt.tz_convert(self.ist)
+        df = df.set_index('datetime')
+        
+        return df
+    
+    def save_to_supabase(self, df, interval):
+        """Save data to Supabase"""
+        if df.empty:
+            return
+        
+        try:
+            # Prepare data for insertion
+            records = []
+            for idx, row in df.iterrows():
+                records.append({
+                    'datetime': idx.isoformat(),
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'volume': int(row['volume']),
+                    'interval': interval,
+                    'symbol': 'NIFTY50'
+                })
+            
+            # Insert data (upsert to handle duplicates)
+            self.supabase.table('nifty_data').upsert(records).execute()
+            
         except Exception as e:
-            st.error(f"Database error: {e}")
-            return False
-
-    def load_from_db(self, hours_back=24):
-        """Load recent data from Supabase"""
+            st.warning(f"Database save error: {e}")
+    
+    def load_from_supabase(self, interval, hours_back=24):
+        """Load data from Supabase"""
         try:
-            cutoff_time = datetime.now() - timedelta(hours=hours_back)
-            result = self.supabase.table(self.table_name)\
+            cutoff_time = (datetime.now(self.ist) - timedelta(hours=hours_back)).isoformat()
+            
+            response = self.supabase.table('nifty_data')\
                 .select("*")\
-                .gte("timestamp", cutoff_time.isoformat())\
-                .order("timestamp", desc=False)\
+                .eq('interval', interval)\
+                .eq('symbol', 'NIFTY50')\
+                .gte('datetime', cutoff_time)\
+                .order('datetime')\
                 .execute()
             
-            if result.data:
-                return pd.DataFrame(result.data)
-            return pd.DataFrame()
+            if response.data:
+                df = pd.DataFrame(response.data)
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df = df.set_index('datetime')
+                return df[['open', 'high', 'low', 'close', 'volume']]
+            
         except Exception as e:
-            st.error(f"Database load error: {e}")
-            return pd.DataFrame()
-
-def process_historical_data(data, interval):
-    """Convert API response to DataFrame"""
-    if not data or 'open' not in data:
+            st.warning(f"Database load error: {e}")
+        
         return pd.DataFrame()
     
-    # Convert to Indian timezone
-    ist = pytz.timezone('Asia/Kolkata')
-    
-    df = pd.DataFrame({
-        'timestamp': pd.to_datetime(data['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist),
-        'open': data['open'],
-        'high': data['high'],
-        'low': data['low'],
-        'close': data['close'],
-        'volume': data['volume']
-    })
-    
-    # Convert to specified timeframe if needed
-    if interval != "1":
-        df.set_index('timestamp', inplace=True)
-        df = df.resample(f'{interval}T').agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        }).dropna().reset_index()
-    
-    return df
-
-def calculate_vob_indicator(df, length1=5):
-    """Calculate VOB (Volume Order Block) indicator"""
-    df = df.copy()
-    
-    # Calculate EMAs
-    df['ema1'] = df['close'].ewm(span=length1).mean()
-    df['ema2'] = df['close'].ewm(span=length1 + 13).mean()
-    
-    # Calculate ATR
-    df['tr'] = np.maximum(
-        df['high'] - df['low'],
-        np.maximum(
-            abs(df['high'] - df['close'].shift(1)),
-            abs(df['low'] - df['close'].shift(1))
+    def create_candlestick_chart(self, df, interval):
+        """Create TradingView-style candlestick chart"""
+        if df.empty:
+            return None
+        
+        # Create subplots
+        fig = make_subplots(
+            rows=2, cols=1,
+            row_heights=[0.7, 0.3],
+            subplot_titles=('Nifty 50 Price Action', 'Volume'),
+            vertical_spacing=0.03,
+            shared_xaxes=True
         )
-    )
-    df['atr'] = df['tr'].rolling(200).mean() * 3
+        
+        # Candlestick chart
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index,
+                open=df['open'],
+                high=df['high'],
+                low=df['low'],
+                close=df['close'],
+                name='Nifty 50',
+                increasing_line_color='#00ff88',
+                decreasing_line_color='#ff4444',
+                increasing_fillcolor='#00ff88',
+                decreasing_fillcolor='#ff4444'
+            ),
+            row=1, col=1
+        )
+        
+        # Volume bars
+        colors = ['#00ff88' if close >= open else '#ff4444' 
+                 for close, open in zip(df['close'], df['open'])]
+        
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df['volume'],
+                name='Volume',
+                marker_color=colors,
+                opacity=0.6
+            ),
+            row=2, col=1
+        )
+        
+        # Update layout for TradingView-like appearance
+        fig.update_layout(
+            title=f"Nifty 50 - {interval} Min Chart",
+            xaxis_rangeslider_visible=False,
+            template='plotly_dark',
+            height=700,
+            showlegend=False,
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+        
+        # Update x-axis
+        fig.update_xaxes(
+            showgrid=True,
+            gridcolor='rgba(128,128,128,0.3)',
+            showspikes=True,
+            spikecolor="white",
+            spikesnap="cursor",
+            spikemode="across"
+        )
+        
+        # Update y-axis
+        fig.update_yaxes(
+            showgrid=True,
+            gridcolor='rgba(128,128,128,0.3)',
+            side="right",
+            showspikes=True,
+            spikecolor="white",
+            spikesnap="cursor",
+            spikemode="across"
+        )
+        
+        return fig
     
-    # Calculate crossovers
-    df['ema1_prev'] = df['ema1'].shift(1)
-    df['ema2_prev'] = df['ema2'].shift(1)
-    df['cross_up'] = (df['ema1'] > df['ema2']) & (df['ema1_prev'] <= df['ema2_prev'])
-    df['cross_dn'] = (df['ema1'] < df['ema2']) & (df['ema1_prev'] >= df['ema2_prev'])
-    
-    vob_zones = []
-    
-    for idx in range(len(df)):
-        if df.iloc[idx]['cross_up']:
-            # Find lowest in last length1+13 periods
-            start_idx = max(0, idx - (length1 + 13))
-            period_data = df.iloc[start_idx:idx+1]
-            lowest_val = period_data['low'].min()
-            lowest_idx = period_data['low'].idxmin()
+    def run(self):
+        """Main application"""
+        st.title("📈 Nifty Price Action Chart")
+        
+        # Sidebar controls
+        with st.sidebar:
+            st.header("Chart Settings")
             
-            if lowest_idx < len(df):
-                lowest_bar = df.iloc[lowest_idx]
-                base = min(lowest_bar['open'], lowest_bar['close'])
-                atr_val = df.iloc[idx]['atr']
-                
-                if (base - lowest_val) < atr_val * 0.5:
-                    base = lowest_val + atr_val * 0.5
-                
-                vob_zones.append({
-                    'type': 'bullish',
-                    'start_time': df.iloc[lowest_idx]['timestamp'],
-                    'end_time': df.iloc[idx]['timestamp'],
-                    'base_level': base,
-                    'low_level': lowest_val
-                })
-        
-        elif df.iloc[idx]['cross_dn']:
-            # Find highest in last length1+13 periods
-            start_idx = max(0, idx - (length1 + 13))
-            period_data = df.iloc[start_idx:idx+1]
-            highest_val = period_data['high'].max()
-            highest_idx = period_data['high'].idxmax()
+            # Time frame selector
+            timeframe = st.selectbox(
+                "Select Timeframe",
+                options=['1', '3', '5', '15'],
+                index=1,  # Default to 3 min
+                format_func=lambda x: f"{x} Min"
+            )
             
-            if highest_idx < len(df):
-                highest_bar = df.iloc[highest_idx]
-                base = max(highest_bar['open'], highest_bar['close'])
-                atr_val = df.iloc[idx]['atr']
-                
-                if (highest_val - base) < atr_val * 0.5:
-                    base = highest_val - atr_val * 0.5
-                
-                vob_zones.append({
-                    'type': 'bearish',
-                    'start_time': df.iloc[highest_idx]['timestamp'],
-                    'end_time': df.iloc[idx]['timestamp'],
-                    'base_level': base,
-                    'high_level': highest_val
-                })
-    
-    return vob_zones
-    """Create TradingView-style candlestick chart"""
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        subplot_titles=('Price', 'Volume'),
-        row_width=[0.2, 0.7]
-    )
-    
-    # Candlestick chart
-    fig.add_trace(
-        go.Candlestick(
-            x=df['timestamp'],
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name="Nifty 50",
-            increasing_line_color='#26a69a',
-            decreasing_line_color='#ef5350'
-        ),
-        row=1, col=1
-    )
-    
-    # Volume chart
-    colors = ['#26a69a' if close >= open else '#ef5350' 
-              for close, open in zip(df['close'], df['open'])]
-    
-    fig.add_trace(
-        go.Bar(
-            x=df['timestamp'],
-            y=df['volume'],
-            name="Volume",
-            marker_color=colors,
-            opacity=0.7
-        ),
-        row=2, col=1
-    )
-    
-    # Update layout
-    fig.update_layout(
-        title=f"Nifty 50 - {timeframe} Min Chart",
-        xaxis_title="Time",
-        yaxis_title="Price",
-        template="plotly_dark",
-        height=700,
-        showlegend=False,
-        xaxis_rangeslider_visible=False
-    )
-    
-    fig.update_xaxes(type='date')
-    fig.update_yaxes(title_text="Volume", row=2, col=1)
-    
-    return fig
-
-def main():
-    st.set_page_config(page_title="Nifty Price Action Chart", layout="wide")
-    st.title("Nifty 50 Price Action Chart")
-    
-    # Initialize components
-    dhan_api = DhanAPI()
-    supabase = init_supabase()
-    data_manager = DataManager(supabase)
-    
-    # Sidebar controls
-    st.sidebar.header("Chart Settings")
-    
-    timeframes = {
-        "1 Min": "1",
-        "3 Min": "3", 
-        "5 Min": "5",
-        "15 Min": "15"
-    }
-    
-    selected_timeframe = st.sidebar.selectbox(
-        "Select Timeframe", 
-        list(timeframes.keys()),
-        index=1  # Default to 3 Min
-    )
-    
-    hours_back = st.sidebar.slider("Hours of Data", 1, 24, 6)
-    
-    st.sidebar.header("VOB Indicator")
-    vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
-    show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
-    
-    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
-    
-    # Main content area
-    col1, col2 = st.columns([3, 1])
-    
-    with col2:
-        st.subheader("Controls")
+            # Data source
+            data_source = st.radio(
+                "Data Source",
+                ["Live API", "Database", "Both"]
+            )
+            
+            # Auto refresh
+            auto_refresh = st.checkbox("Auto Refresh", value=True)
+            refresh_interval = st.slider("Refresh Interval (seconds)", 30, 300, 60)
+            
+            # Manual refresh button
+            if st.button("🔄 Refresh Now"):
+                st.rerun()
         
-        if st.button("Fetch Fresh Data"):
-            with st.spinner("Fetching data..."):
-                # Calculate date range
-                end_date = datetime.now()
-                start_date = end_date - timedelta(hours=hours_back)
-                
-                # Fetch from API
-                data = dhan_api.get_historical_data(
-                    start_date.strftime("%Y-%m-%d %H:%M:%S"),
-                    end_date.strftime("%Y-%m-%d %H:%M:%S"),
-                    timeframes[selected_timeframe]
-                )
-                
-                if data:
-                    df = process_historical_data(data, timeframes[selected_timeframe])
-                    if not df.empty:
-                        # Store in session state and database
-                        st.session_state.chart_data = df
-                        data_manager.save_to_db(df)
-                        st.success(f"Fetched {len(df)} candles")
-                        st.rerun()
-                    else:
-                        st.warning("No data received")
-                else:
-                    st.error("API request failed")
+        # Main content area
+        col1, col2, col3, col4 = st.columns(4)
         
-        # Live quote section
-        st.subheader("Live Quote")
-        live_placeholder = st.empty()
+        # Fetch and process data
+        df = pd.DataFrame()
         
-        if st.button("Get Live Price"):
-            quote_data = dhan_api.get_live_quote()
-            if quote_data and 'data' in quote_data:
-                nifty_data = quote_data['data'][dhan_api.nifty_segment][dhan_api.nifty_security_id]
-                live_placeholder.metric(
-                    "Nifty 50",
-                    f"₹{nifty_data['last_price']:.2f}",
-                    f"{nifty_data['net_change']:.2f}"
-                )
-    
-    with col1:
-        # Load and display chart
-        df = data_manager.load_from_db(hours_back)
+        if data_source in ["Live API", "Both"]:
+            with st.spinner("Fetching live data..."):
+                api_data = self.fetch_intraday_data(interval=timeframe)
+                if api_data:
+                    df_api = self.process_data(api_data)
+                    if not df_api.empty:
+                        df = df_api
+                        # Save to database
+                        self.save_to_supabase(df_api, timeframe)
         
-        # Check session state for fresh data
-        if 'chart_data' in st.session_state:
-            df = st.session_state.chart_data
+        if data_source in ["Database", "Both"] and df.empty:
+            with st.spinner("Loading from database..."):
+                df = self.load_from_supabase(timeframe)
         
+        # Display metrics
         if not df.empty:
-            # Ensure timestamp is datetime
-            if 'timestamp' in df.columns:
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            latest = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else latest
             
-            # Apply timeframe grouping if needed
-            if timeframes[selected_timeframe] != "1":
-                df.set_index('timestamp', inplace=True)
-                df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
-                    'open': 'first',
-                    'high': 'max',
-                    'low': 'min',
-                    'close': 'last',
-                    'volume': 'sum'
-                }).dropna().reset_index()
+            with col1:
+                change = latest['close'] - prev['close']
+                change_pct = (change / prev['close']) * 100
+                st.metric(
+                    "Current Price", 
+                    f"₹{latest['close']:.2f}",
+                    f"{change:+.2f} ({change_pct:+.2f}%)"
+                )
             
-            # Create and display chart
-            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_sensitivity if show_vob else None)
-            st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                st.metric("High", f"₹{df['high'].max():.2f}")
             
-            # Display stats
-            if len(df) > 0:
-                latest = df.iloc[-1]
-                col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
-                
-                with col1_stats:
-                    st.metric("Open", f"₹{latest['open']:.2f}")
-                with col2_stats:
-                    st.metric("High", f"₹{latest['high']:.2f}")
-                with col3_stats:
-                    st.metric("Low", f"₹{latest['low']:.2f}")
-                with col4_stats:
-                    st.metric("Close", f"₹{latest['close']:.2f}")
-                
+            with col3:
+                st.metric("Low", f"₹{df['low'].min():.2f}")
+            
+            with col4:
+                st.metric("Volume", f"{df['volume'].sum():,}")
+        
+        # Create and display chart
+        if not df.empty:
+            chart = self.create_candlestick_chart(df, timeframe)
+            if chart:
+                st.plotly_chart(chart, use_container_width=True)
+            
+            # Data table (expandable)
+            with st.expander("📊 Raw Data"):
+                st.dataframe(df.tail(50), use_container_width=True)
         else:
-            st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
-    
-    # Auto refresh functionality
-    if auto_refresh:
-        time.sleep(30)
-        st.rerun()
+            st.warning("No data available. Please check your API credentials or try refreshing.")
+        
+        # Auto refresh
+        if auto_refresh:
+            time.sleep(refresh_interval)
+            st.rerun()
 
+# Initialize and run the app
 if __name__ == "__main__":
-    main()
+    app = NiftyChartApp()
+    app.run()
