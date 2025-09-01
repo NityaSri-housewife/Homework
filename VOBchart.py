@@ -24,11 +24,7 @@ class NiftyChartApp:
         self.ist = pytz.timezone('Asia/Kolkata')
         self.nifty_security_id = "13"  # Nifty 50 security ID for DhanHQ
         self.vob_zones = []  # Store active VOB zones
-        # Initialize session state for tracking sent alerts
-        if 'sent_vob_alerts' not in st.session_state:
-            st.session_state.sent_vob_alerts = set()
-        if 'last_alert_check' not in st.session_state:
-            st.session_state.last_alert_check = None
+        self.last_vob_time = None
         
     def setup_secrets(self):
         """Setup API credentials from Streamlit secrets"""
@@ -217,60 +213,39 @@ class NiftyChartApp:
         return vob_zones
     
     def check_new_vob_zones(self, current_zones):
-        """Check for new VOB zones and send Telegram alerts only for new formations"""
+        """Check for new VOB zones and send Telegram alerts"""
         if not current_zones:
             return
         
-        new_alerts_sent = 0
+        latest_zone = current_zones[-1]
+        latest_signal_time = latest_zone['signal_time']
         
-        for zone in current_zones:
-            # Create unique identifier for each VOB zone
-            zone_id = f"{zone['type']}_{zone['signal_time'].isoformat()}_{zone['base_price']:.2f}"
+        # Check if this is a new VOB zone
+        if self.last_vob_time is None or latest_signal_time > self.last_vob_time:
+            zone_type = latest_zone['type'].title()
+            signal_time_str = latest_signal_time.strftime("%H:%M:%S")
             
-            # Only send alert if this zone hasn't been alerted before
-            if zone_id not in st.session_state.sent_vob_alerts:
-                # Check if this zone was formed in the last few minutes (avoid old zones on app restart)
-                zone_age_minutes = (datetime.now(self.ist) - zone['signal_time']).total_seconds() / 60
-                
-                if zone_age_minutes <= 5:  # Only alert for zones formed in last 5 minutes
-                    zone_type = zone['type'].title()
-                    signal_time_str = zone['signal_time'].strftime("%H:%M:%S")
-                    
-                    if zone['type'] == 'bullish':
-                        price_info = f"Base: ₹{zone['base_price']:.2f}\nSupport: ₹{zone['lowest_price']:.2f}"
-                    else:
-                        price_info = f"Base: ₹{zone['base_price']:.2f}\nResistance: ₹{zone['highest_price']:.2f}"
-                    
-                    message = f"""🚨 New VOB Zone Detected!
+            if latest_zone['type'] == 'bullish':
+                price_info = f"Base: ₹{latest_zone['base_price']:.2f}\nSupport: ₹{latest_zone['lowest_price']:.2f}"
+            else:
+                price_info = f"Base: ₹{latest_zone['base_price']:.2f}\nResistance: ₹{latest_zone['highest_price']:.2f}"
+            
+            message = f"""
+🚨 <b>New VOB Zone Detected!</b>
 
-📊 Nifty 50
-🔥 Type: {zone_type} VOB
-⏰ Time: {signal_time_str} IST
-💰 Price Levels:
+📊 <b>Nifty 50</b>
+🔥 <b>Type:</b> {zone_type} VOB
+⏰ <b>Time:</b> {signal_time_str} IST
+💰 <b>Price Levels:</b>
 {price_info}
 
-📈 Trade accordingly!"""
-                    
-                    if self.send_telegram_message(message):
-                        st.success(f"Telegram alert sent for {zone_type} VOB at {signal_time_str}")
-                        # Mark this zone as alerted
-                        st.session_state.sent_vob_alerts.add(zone_id)
-                        new_alerts_sent += 1
-                else:
-                    # Mark old zones as already processed to avoid future alerts
-                    st.session_state.sent_vob_alerts.add(zone_id)
-        
-        # Clean up old alert records (keep only last 100)
-        if len(st.session_state.sent_vob_alerts) > 100:
-            # Convert to list, sort, and keep last 50
-            alerts_list = list(st.session_state.sent_vob_alerts)
-            st.session_state.sent_vob_alerts = set(alerts_list[-50:])
-        
-        if new_alerts_sent > 0:
-            st.info(f"Sent {new_alerts_sent} new VOB alert(s)")
-        
-        # Update last check time
-        st.session_state.last_alert_check = datetime.now(self.ist)
+📈 Trade accordingly!
+            """.strip()
+            
+            if self.send_telegram_message(message):
+                st.success(f"Telegram alert sent for {zone_type} VOB at {signal_time_str}")
+            
+            self.last_vob_time = latest_signal_time
         """Save data to Supabase"""
         if df.empty:
             return
@@ -481,13 +456,6 @@ class NiftyChartApp:
             st.subheader("Telegram Alerts")
             telegram_enabled = st.checkbox("Enable Telegram Alerts", 
                                          value=bool(self.telegram_bot_token))
-            
-            if telegram_enabled:
-                st.info(f"Alerts tracked: {len(st.session_state.sent_vob_alerts)}")
-                if st.button("Clear Alert History"):
-                    st.session_state.sent_vob_alerts.clear()
-                    st.success("Alert history cleared!")
-                    st.rerun()
             
             # Data source
             data_source = st.radio(
