@@ -83,17 +83,11 @@ class DataManager:
                 .execute()
             
             if result.data:
-                df = pd.DataFrame(result.data)
-                # Convert timestamp string to datetime
-                if 'timestamp' in df.columns:
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                return df
-            # Return empty DataFrame with timestamp column if no data
-            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                return pd.DataFrame(result.data)
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Database load error: {e}")
-            # Return empty DataFrame with timestamp column on error
-            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            return pd.DataFrame()
 
 def process_historical_data(data, interval):
     """Convert API response to DataFrame"""
@@ -103,49 +97,14 @@ def process_historical_data(data, interval):
     # Convert to Indian timezone
     ist = pytz.timezone('Asia/Kolkata')
     
-    try:
-        # Handle timestamp conversion with better error handling
-        if 'timestamp' in data and len(data['timestamp']) > 0:
-            # Try different methods to parse timestamp
-            try:
-                # First try with seconds since epoch
-                timestamps = pd.to_datetime(data['timestamp'], unit='s')
-            except (ValueError, TypeError):
-                try:
-                    # If that fails, try without unit parameter
-                    timestamps = pd.to_datetime(data['timestamp'])
-                except (ValueError, TypeError):
-                    # If all else fails, create a time range
-                    st.warning("Could not parse timestamps, generating time range")
-                    n_periods = len(data['open'])
-                    end_time = datetime.now(ist)
-                    start_time = end_time - timedelta(minutes=n_periods * int(interval))
-                    timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
-            
-            # Convert to IST timezone
-            if timestamps.tz is None:
-                timestamps = timestamps.tz_localize('UTC').tz_convert(ist)
-            else:
-                timestamps = timestamps.tz_convert(ist)
-        else:
-            # If no timestamps in data, create a time range
-            n_periods = len(data['open'])
-            end_time = datetime.now(ist)
-            start_time = end_time - timedelta(minutes=n_periods * int(interval))
-            timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
-        
-        df = pd.DataFrame({
-            'timestamp': timestamps,
-            'open': data['open'],
-            'high': data['high'],
-            'low': data['low'],
-            'close': data['close'],
-            'volume': data['volume']
-        })
-        
-    except Exception as e:
-        st.error(f"Error processing historical data: {e}")
-        return pd.DataFrame()
+    df = pd.DataFrame({
+        'timestamp': pd.to_datetime(data['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist),
+        'open': data['open'],
+        'high': data['high'],
+        'low': data['low'],
+        'close': data['close'],
+        'volume': data['volume']
+    })
     
     # Convert to specified timeframe if needed
     if interval != "1":
@@ -234,9 +193,7 @@ def calculate_vob_indicator(df, length1=5):
                 })
     
     return vob_zones
-
-def create_candlestick_chart(df, timeframe, vob_zones=None):
-    """Create TradingView-style candlestick chart with VOB zones"""
+    """Create TradingView-style candlestick chart"""
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -260,56 +217,6 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
         row=1, col=1
     )
     
-    # Add VOB zones if provided
-    if vob_zones:
-        for zone in vob_zones:
-            if zone['type'] == 'bullish':
-                # Bullish zone (green)
-                fig.add_shape(
-                    type="rect",
-                    x0=zone['start_time'],
-                    x1=zone['end_time'],
-                    y0=zone['low_level'],
-                    y1=zone['base_level'],
-                    line=dict(width=0),
-                    fillcolor="rgba(0, 255, 0, 0.2)",
-                    row=1, col=1
-                )
-                # Add horizontal line at base level
-                fig.add_trace(
-                    go.Scatter(
-                        x=[zone['start_time'], zone['end_time']],
-                        y=[zone['base_level'], zone['base_level']],
-                        mode='lines',
-                        line=dict(color='green', width=2, dash='dash'),
-                        name='VOB Base'
-                    ),
-                    row=1, col=1
-                )
-            else:
-                # Bearish zone (red)
-                fig.add_shape(
-                    type="rect",
-                    x0=zone['start_time'],
-                    x1=zone['end_time'],
-                    y0=zone['base_level'],
-                    y1=zone['high_level'],
-                    line=dict(width=0),
-                    fillcolor="rgba(255, 0, 0, 0.2)",
-                    row=1, col=1
-                )
-                # Add horizontal line at base level
-                fig.add_trace(
-                    go.Scatter(
-                        x=[zone['start_time'], zone['end_time']],
-                        y=[zone['base_level'], zone['base_level']],
-                        mode='lines',
-                        line=dict(color='red', width=2, dash='dash'),
-                        name='VOB Base'
-                    ),
-                    row=1, col=1
-                )
-    
     # Volume chart
     colors = ['#26a69a' if close >= open else '#ef5350' 
               for close, open in zip(df['close'], df['open'])]
@@ -327,7 +234,7 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
     
     # Update layout
     fig.update_layout(
-        title=f"Nifty 50 - {timeframe} Min Chart" + (" with VOB Zones" if vob_zones else ""),
+        title=f"Nifty 50 - {timeframe} Min Chart",
         xaxis_title="Time",
         yaxis_title="Price",
         template="plotly_dark",
@@ -429,44 +336,23 @@ def main():
             df = st.session_state.chart_data
         
         if not df.empty:
-            # Ensure we have the timestamp column and handle missing values
-            if 'timestamp' not in df.columns:
-                st.error("Timestamp column is missing from the data")
-                return
+            # Ensure timestamp is datetime
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
             
-            # Ensure timestamp is datetime and drop any missing values
-            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-            df = df.dropna(subset=['timestamp'])
-            
-            # Apply timeframe grouping if needed (only if we have enough data)
-            if timeframes[selected_timeframe] != "1" and len(df) > 1:
-                try:
-                    df.set_index('timestamp', inplace=True)
-                    df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
-                        'open': 'first',
-                        'high': 'max',
-                        'low': 'min',
-                        'close': 'last',
-                        'volume': 'sum'
-                    }).dropna().reset_index()
-                except Exception as e:
-                    st.error(f"Error resampling data: {e}")
-                    # If resampling fails, continue with original data
-            
-            # Calculate VOB zones if enabled
-            vob_zones = None
-            if show_vob and len(df) > 50:  # Need enough data for VOB calculation
-                try:
-                    vob_zones = calculate_vob_indicator(df, vob_sensitivity)
-                    st.sidebar.info(f"Found {len(vob_zones)} VOB zones")
-                except Exception as e:
-                    st.sidebar.error(f"Error calculating VOB: {e}")
-                    vob_zones = None
-            elif show_vob:
-                st.sidebar.warning("Need more data points for VOB calculation")
+            # Apply timeframe grouping if needed
+            if timeframes[selected_timeframe] != "1":
+                df.set_index('timestamp', inplace=True)
+                df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                }).dropna().reset_index()
             
             # Create and display chart
-            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
+            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_sensitivity if show_vob else None)
             st.plotly_chart(fig, use_container_width=True)
             
             # Display stats
