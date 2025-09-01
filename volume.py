@@ -1,4 +1,4 @@
-import str eamlit as st
+import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -868,10 +868,12 @@ Based on option chain analysis of nearest expiry."""
             with col3:
                 st.metric("Market Sentiment", bias)
             
-            # Display OI ratio
+            # Display OI ratio - FIXED: Ensure the value is between 0 and 1
             if pe_oi != 0:
                 oi_ratio = ce_oi / pe_oi
-                st.progress(min(oi_ratio, 2.0) / 2.0, 
+                # Normalize the ratio to be between 0 and 1 for the progress bar
+                normalized_ratio = min(max(oi_ratio, 0), 2.0) / 2.0
+                st.progress(normalized_ratio, 
                            text=f"Call/Put OI Ratio: {oi_ratio:.2f}")
         
         # Create and display chart
