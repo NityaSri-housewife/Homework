@@ -88,11 +88,37 @@ class NiftyChartApp:
             self.dhan_token = st.secrets["dhan"]["access_token"]
             self.dhan_client_id = st.secrets["dhan"]["client_id"]
             self.supabase_url = st.secrets["supabase"]["url"]
-            self.supabase_key = st.secrets["supabase"]["anon_key"]
+            
+            # Try different possible key names for Supabase
+            if "anon_key" in st.secrets["supabase"]:
+                self.supabase_key = st.secrets["supabase"]["anon_key"]
+            elif "key" in st.secrets["supabase"]:
+                self.supabase_key = st.secrets["supabase"]["key"]
+            elif "service_key" in st.secrets["supabase"]:
+                self.supabase_key = st.secrets["supabase"]["service_key"]
+            else:
+                st.error("Missing Supabase key in secrets. Please add 'anon_key', 'key', or 'service_key' to your supabase secrets.")
+                st.stop()
+                
             self.telegram_bot_token = st.secrets.get("telegram", {}).get("bot_token", "")
             self.telegram_chat_id = st.secrets.get("telegram", {}).get("chat_id", "")
         except KeyError as e:
             st.error(f"Missing secret: {e}")
+            st.info("""
+            Please make sure your secrets.toml file has the following structure:
+            
+            [dhan]
+            access_token = "your_dhan_access_token"
+            client_id = "your_dhan_client_id"
+            
+            [supabase]
+            url = "your_supabase_url"
+            anon_key = "your_supabase_anon_key"
+            
+            [telegram]
+            bot_token = "your_telegram_bot_token"
+            chat_id = "your_telegram_chat_id"
+            """)
             st.stop()
     
     def setup_supabase(self):
@@ -102,7 +128,7 @@ class NiftyChartApp:
             # Test connection
             self.supabase.table('nifty_data').select("id").limit(1).execute()
         except Exception as e:
-            st.error(f"Supabase connection error: {str(e)}")
+            st.warning(f"Supabase connection error: {str(e)}")
             st.info("App will continue without database functionality")
             self.supabase = None
     
@@ -411,7 +437,7 @@ Based on option chain analysis of nearest expiry."""
     
     def save_to_supabase(self, df, interval):
         """Save data to Supabase"""
-        if df.empty:
+        if df.empty or not self.supabase:
             return
         
         try:
