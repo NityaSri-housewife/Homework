@@ -246,6 +246,8 @@ class NiftyChartApp:
                 st.success(f"Telegram alert sent for {zone_type} VOB at {signal_time_str}")
             
             self.last_vob_time = latest_signal_time
+    
+    def save_to_supabase(self, df, interval):
         """Save data to Supabase"""
         if df.empty:
             return
