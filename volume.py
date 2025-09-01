@@ -79,8 +79,8 @@ class NiftyChartApp:
             st.session_state.sent_vob_alerts = set()
         if 'last_alert_check' not in st.session_state:
             st.session_state.last_alert_check = None
-        if 'sent_oi_alerts' not in st.session_state:
-            st.session_state.sent_oi_alerts = set()
+        if 'sent_rsi_alerts' not in st.session_state:
+            st.session_state.sent_rsi_alerts = set()
         
     def setup_secrets(self):
         """Setup API credentials from Streamlit secrets"""
@@ -294,7 +294,59 @@ class NiftyChartApp:
         
         return vob_zones
     
-    def check_new_vob_zones(self, current_zones):
+    def check_rsi_alerts(self, rsi_data):
+        """Check for RSI overbought/oversold conditions and send alerts"""
+        if rsi_data is None or rsi_data.empty:
+            return
+        
+        latest_rsi = rsi_data.iloc[-1]['Ultimate_RSI']
+        prev_rsi = rsi_data.iloc[-2]['Ultimate_RSI'] if len(rsi_data) > 1 else latest_rsi
+        
+        # Create a unique identifier for this RSI reading
+        rsi_id = f"{latest_rsi:.1f}_{datetime.now(self.ist).strftime('%Y-%m-%d %H:%M')}"
+        
+        # Check for overbought condition (RSI > 70)
+        if latest_rsi > 70 and prev_rsi <= 70:
+            condition = "Overbought"
+            emoji = "🔴"
+            message = f"""🚨 {emoji} RSI Overbought Alert!
+
+📊 Nifty 50
+📈 RSI: {latest_rsi:.2f} (Above 70)
+⏰ Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
+📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
+
+⚠️ Potential reversal or pullback expected.
+Consider taking profits or implementing protective strategies."""
+            
+            if rsi_id not in st.session_state.sent_rsi_alerts and self.send_telegram_message(message):
+                st.success(f"Telegram alert sent for RSI Overbought condition")
+                st.session_state.sent_rsi_alerts.add(rsi_id)
+        
+        # Check for oversold condition (RSI < 30)
+        elif latest_rsi < 30 and prev_rsi >= 30:
+            condition = "Oversold"
+            emoji = "🟢"
+            message = f"""🚨 {emoji} RSI Oversold Alert!
+
+📊 Nifty 50
+📈 RSI: {latest_rsi:.2f} (Below 30)
+⏰ Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
+📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
+
+⚠️ Potential bounce or reversal expected.
+Consider looking for buying opportunities."""
+            
+            if rsi_id not in st.session_state.sent_rsi_alerts and self.send_telegram_message(message):
+                st.success(f"Telegram alert sent for RSI Oversold condition")
+                st.session_state.sent_rsi_alerts.add(rsi_id)
+        
+        # Clean up old alert records
+        if len(st.session_state.sent_rsi_alerts) > 20:
+            alerts_list = list(st.session_state.sent_rsi_alerts)
+            st.session_state.sent_rsi_alerts = set(alerts_list[-10:])
+    
+    def check_new_vob_zones(self, current_zones, rsi_data=None):
         """Check for new VOB zones and send Telegram alerts only for new formations"""
         if not current_zones:
             return
@@ -316,14 +368,24 @@ class NiftyChartApp:
                     
                     if zone['type'] == 'bullish':
                         price_info = f"Base: ₹{zone['base_price']:.2f}\nSupport: ₹{zone['lowest_price']:.2f}"
+                        emoji = "🟢"
                     else:
                         price_info = f"Base: ₹{zone['base_price']:.2f}\nResistance: ₹{zone['highest_price']:.2f}"
+                        emoji = "🔴"
                     
-                    message = f"""🚨 New VOB Zone Detected!
+                    # Get current RSI value if available
+                    rsi_info = ""
+                    if rsi_data is not None and not rsi_data.empty:
+                        latest_rsi = rsi_data.iloc[-1]['Ultimate_RSI']
+                        rsi_info = f"📈 RSI: {latest_rsi:.2f}\n"
+                    
+                    message = f"""🚨 {emoji} New VOB Zone Detected!
 
 📊 Nifty 50
 🔥 Type: {zone_type} VOB
 ⏰ Time: {signal_time_str} IST
+{rsi_info}📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
+
 💰 Price Levels:
 {price_info}
 
@@ -407,33 +469,6 @@ class NiftyChartApp:
             sentiment = "Neutral ⚖️"
 
         return total_ce_change, total_pe_change, sentiment
-    
-    def check_oi_sentiment_change(self, current_sentiment):
-        """Check for OI sentiment changes and send alerts"""
-        if not current_sentiment:
-            return
-        
-        # Create a unique identifier for this sentiment reading
-        sentiment_id = f"{current_sentiment}_{datetime.now(self.ist).strftime('%Y-%m-%d %H:%M')}"
-        
-        # Only send alert if this sentiment hasn't been alerted before
-        if sentiment_id not in st.session_state.sent_oi_alerts:
-            message = f"""📊 Nifty OI Sentiment Update
-
-Current Sentiment: {current_sentiment}
-Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
-
-Based on option chain analysis of nearest expiry."""
-            
-            if self.send_telegram_message(message):
-                st.success(f"Telegram alert sent for OI sentiment: {current_sentiment}")
-                # Mark this sentiment as alerted
-                st.session_state.sent_oi_alerts.add(sentiment_id)
-                
-                # Clean up old alert records
-                if len(st.session_state.sent_oi_alerts) > 20:
-                    alerts_list = list(st.session_state.sent_oi_alerts)
-                    st.session_state.sent_oi_alerts = set(alerts_list[-10:])
     
     def save_to_supabase(self, df, interval):
         """Save data to Supabase"""
@@ -689,8 +724,6 @@ Based on option chain analysis of nearest expiry."""
             # Option Chain Settings
             st.subheader("Option Chain Analysis")
             oi_enabled = st.checkbox("Enable OI Analysis", value=True)
-            oi_alert_enabled = st.checkbox("Enable OI Alerts", 
-                                         value=bool(self.telegram_bot_token))
             
             # Telegram Settings
             st.subheader("Telegram Alerts")
@@ -699,10 +732,10 @@ Based on option chain analysis of nearest expiry."""
             
             if telegram_enabled:
                 st.info(f"VOB Alerts tracked: {len(st.session_state.sent_vob_alerts)}")
-                st.info(f"OI Alerts tracked: {len(st.session_state.sent_oi_alerts)}")
+                st.info(f"RSI Alerts tracked: {len(st.session_state.sent_rsi_alerts)}")
                 if st.button("Clear Alert History"):
                     st.session_state.sent_vob_alerts.clear()
-                    st.session_state.sent_oi_alerts.clear()
+                    st.session_state.sent_rsi_alerts.clear()
                     st.success("Alert history cleared!")
                     st.rerun()
             
@@ -743,28 +776,6 @@ Based on option chain analysis of nearest expiry."""
             with st.spinner("Loading from database..."):
                 df = self.load_from_supabase(timeframe)
         
-        # Calculate VOB zones if enabled and sufficient data
-        if vob_enabled and not df.empty and len(df) >= 18:
-            with st.spinner("Calculating VOB zones..."):
-                try:
-                    vob_zones = self.detect_vob_zones(df, length1=vob_sensitivity)
-                    
-                    # Check for new VOB zones and send alerts
-                    if telegram_enabled and vob_zones:
-                        self.check_new_vob_zones(vob_zones)
-                except Exception as e:
-                    st.warning(f"VOB calculation error: {str(e)}")
-                    vob_zones = []
-        
-        # Calculate RSI if enabled and sufficient data
-        if rsi_enabled and not df.empty and len(df) >= rsi_length:
-            with st.spinner("Calculating Ultimate RSI..."):
-                try:
-                    rsi_data = ultimate_rsi(df.copy(), length=rsi_length, smooth=rsi_smooth)
-                except Exception as e:
-                    st.warning(f"RSI calculation error: {str(e)}")
-                    rsi_data = None
-        
         # Fetch option chain data if enabled
         if oi_enabled:
             with st.spinner("Fetching option chain data..."):
@@ -775,14 +786,36 @@ Based on option chain analysis of nearest expiry."""
                         if self.option_chain_data:
                             ce_oi, pe_oi, bias = self.calculate_oi_trend(self.option_chain_data)
                             self.oi_sentiment = bias
-                            
-                            # Check for OI sentiment changes and send alerts
-                            if oi_alert_enabled and telegram_enabled:
-                                self.check_oi_sentiment_change(bias)
                 except Exception as e:
                     st.warning(f"Option chain error: {str(e)}")
                     self.option_chain_data = None
                     self.oi_sentiment = None
+        
+        # Calculate VOB zones if enabled and sufficient data
+        if vob_enabled and not df.empty and len(df) >= 18:
+            with st.spinner("Calculating VOB zones..."):
+                try:
+                    vob_zones = self.detect_vob_zones(df, length1=vob_sensitivity)
+                    
+                    # Check for new VOB zones and send alerts
+                    if telegram_enabled and vob_zones:
+                        self.check_new_vob_zones(vob_zones, rsi_data)
+                except Exception as e:
+                    st.warning(f"VOB calculation error: {str(e)}")
+                    vob_zones = []
+        
+        # Calculate RSI if enabled and sufficient data
+        if rsi_enabled and not df.empty and len(df) >= rsi_length:
+            with st.spinner("Calculating Ultimate RSI..."):
+                try:
+                    rsi_data = ultimate_rsi(df.copy(), length=rsi_length, smooth=rsi_smooth)
+                    
+                    # Check for RSI overbought/oversold conditions and send alerts
+                    if telegram_enabled:
+                        self.check_rsi_alerts(rsi_data)
+                except Exception as e:
+                    st.warning(f"RSI calculation error: {str(e)}")
+                    rsi_data = None
         
         # Display metrics
         if not df.empty:
