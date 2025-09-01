@@ -43,9 +43,12 @@ class NiftyChartApp:
         """Initialize Supabase client"""
         try:
             self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+            # Test connection
+            self.supabase.table('nifty_data').select("id").limit(1).execute()
         except Exception as e:
-            st.error(f"Supabase connection error: {e}")
-            st.stop()
+            st.error(f"Supabase connection error: {str(e)}")
+            st.info("App will continue without database functionality")
+            self.supabase = None
     
     def get_dhan_headers(self):
         """Get headers for DhanHQ API calls"""
@@ -270,12 +273,15 @@ class NiftyChartApp:
     
     def load_from_supabase(self, interval, hours_back=24):
         """Load data from Supabase"""
+        if not self.supabase:
+            return pd.DataFrame()
+            
         try:
             cutoff_time = (datetime.now(self.ist) - timedelta(hours=hours_back)).isoformat()
             
             response = self.supabase.table('nifty_data')\
                 .select("*")\
-                .eq('interval', interval)\
+                .eq('interval', str(interval))\
                 .eq('symbol', 'NIFTY50')\
                 .gte('datetime', cutoff_time)\
                 .order('datetime')\
@@ -288,7 +294,7 @@ class NiftyChartApp:
                 return df[['open', 'high', 'low', 'close', 'volume']]
             
         except Exception as e:
-            st.warning(f"Database load error: {e}")
+            st.warning(f"Database load error: {str(e)}")
         
         return pd.DataFrame()
     
@@ -479,21 +485,26 @@ class NiftyChartApp:
                     df_api = self.process_data(api_data)
                     if not df_api.empty:
                         df = df_api
-                        # Save to database
-                        self.save_to_supabase(df_api, timeframe)
+                        # Save to database only if Supabase is available
+                        if self.supabase:
+                            self.save_to_supabase(df_api, timeframe)
         
         if data_source in ["Database", "Both"] and df.empty:
             with st.spinner("Loading from database..."):
                 df = self.load_from_supabase(timeframe)
         
-        # Calculate VOB zones if enabled
-        if vob_enabled and not df.empty:
+        # Calculate VOB zones if enabled and sufficient data
+        if vob_enabled and not df.empty and len(df) >= 18:
             with st.spinner("Calculating VOB zones..."):
-                vob_zones = self.detect_vob_zones(df, length1=vob_sensitivity)
-                
-                # Check for new VOB zones and send alerts
-                if telegram_enabled and vob_zones:
-                    self.check_new_vob_zones(vob_zones)
+                try:
+                    vob_zones = self.detect_vob_zones(df, length1=vob_sensitivity)
+                    
+                    # Check for new VOB zones and send alerts
+                    if telegram_enabled and vob_zones:
+                        self.check_new_vob_zones(vob_zones)
+                except Exception as e:
+                    st.warning(f"VOB calculation error: {str(e)}")
+                    vob_zones = []
         
         # Display metrics
         if not df.empty:
