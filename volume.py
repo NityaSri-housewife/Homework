@@ -17,70 +17,18 @@ st.set_page_config(
     layout="wide"
 )
 
-# RSI Functions
-def moving_average(x, length, ma_type="RMA"):
-    """Helper function for different MA types"""
-    if ma_type == "EMA":
-        return x.ewm(span=length, adjust=False).mean()
-    elif ma_type == "SMA":
-        return x.rolling(length).mean()
-    elif ma_type == "RMA":
-        return x.ewm(alpha=1/length, adjust=False).mean()
-    elif ma_type == "TMA":  # double SMA
-        return x.rolling(length).mean().rolling(length).mean()
-    else:
-        raise ValueError("Unknown MA type")
-
-def ultimate_rsi(df, length=14, ma_type1="RMA", ma_type2="EMA", smooth=14):
-    """
-    Calculate Ultimate RSI (LuxAlgo-style) for given dataframe with 'close' prices.
-    Returns a DataFrame with 'Ultimate_RSI' and 'Signal' columns.
-    """
-    src = df['close']
-
-    # Highest & lowest over lookback
-    upper = src.rolling(length).max()
-    lower = src.rolling(length).min()
-    r = upper - lower
-
-    # Difference logic
-    d = src.diff()
-    diff = np.where(upper > upper.shift(1), r,
-           np.where(lower < lower.shift(1), -r, d))
-
-    diff = pd.Series(diff, index=df.index)
-
-    num = moving_average(diff, length, ma_type1)
-    den = moving_average(diff.abs(), length, ma_type1)
-
-    # Ultimate RSI
-    arsi = (num / den) * 50 + 50
-    signal = moving_average(arsi, smooth, ma_type2)
-
-    df['Ultimate_RSI'] = arsi
-    df['Signal'] = signal
-
-    return df[['Ultimate_RSI', 'Signal']]
-
 class NiftyChartApp:
     def __init__(self):
         self.setup_secrets()
         self.setup_supabase()
         self.ist = pytz.timezone('Asia/Kolkata')
         self.nifty_security_id = "13"  # Nifty 50 security ID for DhanHQ
-        self.nifty_option_id = 13  # Nifty 50 option ID
-        self.segment = "IDX_I"  # Index segment
         self.vob_zones = []  # Store active VOB zones
-        self.option_chain_data = None
-        self.oi_sentiment = None
-        
         # Initialize session state for tracking sent alerts
         if 'sent_vob_alerts' not in st.session_state:
             st.session_state.sent_vob_alerts = set()
         if 'last_alert_check' not in st.session_state:
             st.session_state.last_alert_check = None
-        if 'sent_rsi_alerts' not in st.session_state:
-            st.session_state.sent_rsi_alerts = set()
         
     def setup_secrets(self):
         """Setup API credentials from Streamlit secrets"""
@@ -88,37 +36,11 @@ class NiftyChartApp:
             self.dhan_token = st.secrets["dhan"]["access_token"]
             self.dhan_client_id = st.secrets["dhan"]["client_id"]
             self.supabase_url = st.secrets["supabase"]["url"]
-            
-            # Try different possible key names for Supabase
-            if "anon_key" in st.secrets["supabase"]:
-                self.supabase_key = st.secrets["supabase"]["anon_key"]
-            elif "key" in st.secrets["supabase"]:
-                self.supabase_key = st.secrets["supabase"]["key"]
-            elif "service_key" in st.secrets["supabase"]:
-                self.supabase_key = st.secrets["supabase"]["service_key"]
-            else:
-                st.error("Missing Supabase key in secrets. Please add 'anon_key', 'key', or 'service_key' to your supabase secrets.")
-                st.stop()
-                
+            self.supabase_key = st.secrets["supabase"]["anon_key"]
             self.telegram_bot_token = st.secrets.get("telegram", {}).get("bot_token", "")
             self.telegram_chat_id = st.secrets.get("telegram", {}).get("chat_id", "")
         except KeyError as e:
             st.error(f"Missing secret: {e}")
-            st.info("""
-            Please make sure your secrets.toml file has the following structure:
-            
-            [dhan]
-            access_token = "your_dhan_access_token"
-            client_id = "your_dhan_client_id"
-            
-            [supabase]
-            url = "your_supabase_url"
-            anon_key = "your_supabase_anon_key"
-            
-            [telegram]
-            bot_token = "your_telegram_bot_token"
-            chat_id = "your_telegram_chat_id"
-            """)
             st.stop()
     
     def setup_supabase(self):
@@ -128,7 +50,7 @@ class NiftyChartApp:
             # Test connection
             self.supabase.table('nifty_data').select("id").limit(1).execute()
         except Exception as e:
-            st.warning(f"Supabase connection error: {str(e)}")
+            st.error(f"Supabase connection error: {str(e)}")
             st.info("App will continue without database functionality")
             self.supabase = None
     
@@ -173,6 +95,29 @@ class NiftyChartApp:
             st.error(f"API Error: {e}")
             return None
     
+    def fetch_option_chain_data(self):
+        """Fetch option chain data for OI analysis"""
+        # This is a placeholder - you'll need to implement the actual API call
+        # based on your data provider's API
+        try:
+            # Example structure - replace with actual API call
+            # response = requests.get("your_option_chain_api_url", headers=headers)
+            # data = response.json()
+            
+            # Mock data for demonstration
+            current_time = datetime.now(self.ist)
+            mock_data = {
+                'timestamp': current_time,
+                'call_oi_change': np.random.randint(-100000, 100000),
+                'put_oi_change': np.random.randint(-100000, 100000),
+                'pcr': round(np.random.uniform(0.7, 1.3), 2)
+            }
+            
+            return mock_data
+        except Exception as e:
+            st.error(f"Option chain API Error: {e}")
+            return None
+    
     def process_data(self, api_data):
         """Process API data into DataFrame"""
         if not api_data or 'open' not in api_data:
@@ -191,6 +136,9 @@ class NiftyChartApp:
         df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
         df['datetime'] = df['datetime'].dt.tz_convert(self.ist)
         df = df.set_index('datetime')
+        
+        # Calculate RSI
+        df = self.calculate_ultimate_rsi(df)
         
         return df
     
@@ -225,6 +173,50 @@ class NiftyChartApp:
         true_range = np.maximum(high_low, np.maximum(high_close, low_close))
         atr = true_range.rolling(window=period).mean()
         return atr * 3
+    
+    def moving_average(self, x, length, ma_type="RMA"):
+        """Helper function for different MA types"""
+        if ma_type == "EMA":
+            return x.ewm(span=length, adjust=False).mean()
+        elif ma_type == "SMA":
+            return x.rolling(length).mean()
+        elif ma_type == "RMA":
+            return x.ewm(alpha=1/length, adjust=False).mean()
+        elif ma_type == "TMA":  # double SMA
+            return x.rolling(length).mean().rolling(length).mean()
+        else:
+            raise ValueError("Unknown MA type")
+    
+    def calculate_ultimate_rsi(self, df, length=14, ma_type1="RMA", ma_type2="EMA", smooth=14):
+        """
+        Calculate Ultimate RSI (LuxAlgo-style) for given dataframe with 'close' prices.
+        Returns a DataFrame with 'Ultimate_RSI' and 'Signal' columns.
+        """
+        src = df['close']
+
+        # Highest & lowest over lookback
+        upper = src.rolling(length).max()
+        lower = src.rolling(length).min()
+        r = upper - lower
+
+        # Difference logic
+        d = src.diff()
+        diff = np.where(upper > upper.shift(1), r,
+               np.where(lower < lower.shift(1), -r, d))
+
+        diff = pd.Series(diff, index=df.index)
+
+        num = self.moving_average(diff, length, ma_type1)
+        den = self.moving_average(diff.abs(), length, ma_type1)
+
+        # Ultimate RSI
+        arsi = (num / den) * 50 + 50
+        signal = self.moving_average(arsi, smooth, ma_type2)
+
+        df['Ultimate_RSI'] = arsi
+        df['Signal'] = signal
+
+        return df
     
     def detect_vob_zones(self, df, length1=5):
         """Detect VOB zones based on Pine Script logic"""
@@ -294,59 +286,7 @@ class NiftyChartApp:
         
         return vob_zones
     
-    def check_rsi_alerts(self, rsi_data):
-        """Check for RSI overbought/oversold conditions and send alerts"""
-        if rsi_data is None or rsi_data.empty:
-            return
-        
-        latest_rsi = rsi_data.iloc[-1]['Ultimate_RSI']
-        prev_rsi = rsi_data.iloc[-2]['Ultimate_RSI'] if len(rsi_data) > 1 else latest_rsi
-        
-        # Create a unique identifier for this RSI reading
-        rsi_id = f"{latest_rsi:.1f}_{datetime.now(self.ist).strftime('%Y-%m-%d %H:%M')}"
-        
-        # Check for overbought condition (RSI > 70)
-        if latest_rsi > 70 and prev_rsi <= 70:
-            condition = "Overbought"
-            emoji = "🔴"
-            message = f"""🚨 {emoji} RSI Overbought Alert!
-
-📊 Nifty 50
-📈 RSI: {latest_rsi:.2f} (Above 70)
-⏰ Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
-📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
-
-⚠️ Potential reversal or pullback expected.
-Consider taking profits or implementing protective strategies."""
-            
-            if rsi_id not in st.session_state.sent_rsi_alerts and self.send_telegram_message(message):
-                st.success(f"Telegram alert sent for RSI Overbought condition")
-                st.session_state.sent_rsi_alerts.add(rsi_id)
-        
-        # Check for oversold condition (RSI < 30)
-        elif latest_rsi < 30 and prev_rsi >= 30:
-            condition = "Oversold"
-            emoji = "🟢"
-            message = f"""🚨 {emoji} RSI Oversold Alert!
-
-📊 Nifty 50
-📈 RSI: {latest_rsi:.2f} (Below 30)
-⏰ Time: {datetime.now(self.ist).strftime('%H:%M:%S IST')}
-📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
-
-⚠️ Potential bounce or reversal expected.
-Consider looking for buying opportunities."""
-            
-            if rsi_id not in st.session_state.sent_rsi_alerts and self.send_telegram_message(message):
-                st.success(f"Telegram alert sent for RSI Oversold condition")
-                st.session_state.sent_rsi_alerts.add(rsi_id)
-        
-        # Clean up old alert records
-        if len(st.session_state.sent_rsi_alerts) > 20:
-            alerts_list = list(st.session_state.sent_rsi_alerts)
-            st.session_state.sent_rsi_alerts = set(alerts_list[-10:])
-    
-    def check_new_vob_zones(self, current_zones, rsi_data=None):
+    def check_new_vob_zones(self, current_zones):
         """Check for new VOB zones and send Telegram alerts only for new formations"""
         if not current_zones:
             return
@@ -368,24 +308,14 @@ Consider looking for buying opportunities."""
                     
                     if zone['type'] == 'bullish':
                         price_info = f"Base: ₹{zone['base_price']:.2f}\nSupport: ₹{zone['lowest_price']:.2f}"
-                        emoji = "🟢"
                     else:
                         price_info = f"Base: ₹{zone['base_price']:.2f}\nResistance: ₹{zone['highest_price']:.2f}"
-                        emoji = "🔴"
                     
-                    # Get current RSI value if available
-                    rsi_info = ""
-                    if rsi_data is not None and not rsi_data.empty:
-                        latest_rsi = rsi_data.iloc[-1]['Ultimate_RSI']
-                        rsi_info = f"📈 RSI: {latest_rsi:.2f}\n"
-                    
-                    message = f"""🚨 {emoji} New VOB Zone Detected!
+                    message = f"""🚨 New VOB Zone Detected!
 
 📊 Nifty 50
 🔥 Type: {zone_type} VOB
 ⏰ Time: {signal_time_str} IST
-{rsi_info}📊 OI Sentiment: {self.oi_sentiment or 'N/A'}
-
 💰 Price Levels:
 {price_info}
 
@@ -412,67 +342,9 @@ Consider looking for buying opportunities."""
         # Update last check time
         st.session_state.last_alert_check = datetime.now(self.ist)
     
-    def get_nearest_expiry(self):
-        """Fetch nearest expiry for Nifty"""
-        try:
-            headers = self.get_dhan_headers()
-            data = {"UnderlyingScrip": self.nifty_option_id, "UnderlyingSeg": self.segment}
-            resp = requests.post("https://api.dhan.co/v2/optionchain/expirylist", 
-                               headers=headers, json=data, timeout=10)
-            resp.raise_for_status()
-            expiries = resp.json().get("data", [])
-            return expiries[0] if expiries else None
-        except Exception as e:
-            st.warning(f"Error fetching expiry: {e}")
-            return None
-    
-    def fetch_option_chain(self, expiry):
-        """Fetch option chain for Nifty"""
-        try:
-            headers = self.get_dhan_headers()
-            data = {
-                "UnderlyingScrip": self.nifty_option_id, 
-                "UnderlyingSeg": self.segment, 
-                "Expiry": expiry
-            }
-            resp = requests.post("https://api.dhan.co/v2/optionchain", 
-                               headers=headers, json=data, timeout=10)
-            resp.raise_for_status()
-            return resp.json().get("data", {}).get("oc", {})
-        except Exception as e:
-            st.warning(f"Error fetching option chain: {e}")
-            return {}
-    
-    def calculate_oi_trend(self, option_chain):
-        """Calculate total OI change Call vs Put"""
-        total_ce_change = 0
-        total_pe_change = 0
-
-        for strike, contracts in option_chain.items():
-            ce = contracts.get("ce")
-            pe = contracts.get("pe")
-
-            if ce:
-                change_oi = ce.get("oi", 0) - ce.get("previous_oi", 0)
-                total_ce_change += change_oi
-
-            if pe:
-                change_oi = pe.get("oi", 0) - pe.get("previous_oi", 0)
-                total_pe_change += change_oi
-
-        # Ratio logic
-        if total_pe_change > 1.3 * total_ce_change:
-            sentiment = "Bullish 📈 (Put OI rising faster)"
-        elif total_ce_change > 1.3 * total_pe_change:
-            sentiment = "Bearish 📉 (Call OI rising faster)"
-        else:
-            sentiment = "Neutral ⚖️"
-
-        return total_ce_change, total_pe_change, sentiment
-    
     def save_to_supabase(self, df, interval):
         """Save data to Supabase"""
-        if df.empty or not self.supabase:
+        if df.empty:
             return
         
         try:
@@ -523,28 +395,19 @@ Consider looking for buying opportunities."""
         
         return pd.DataFrame()
     
-    def create_candlestick_chart(self, df, interval, vob_zones=None, rsi_data=None):
+    def create_candlestick_chart(self, df, interval, vob_zones=None, oi_data=None):
         """Create TradingView-style candlestick chart with VOB zones and RSI"""
         if df.empty:
             return None
         
         # Create subplots
-        if rsi_data is not None and not rsi_data.empty:
-            fig = make_subplots(
-                rows=3, cols=1,
-                row_heights=[0.6, 0.2, 0.2],
-                subplot_titles=('Nifty 50 Price Action with VOB Zones', 'Volume', 'Ultimate RSI'),
-                vertical_spacing=0.03,
-                shared_xaxes=True
-            )
-        else:
-            fig = make_subplots(
-                rows=2, cols=1,
-                row_heights=[0.7, 0.3],
-                subplot_titles=('Nifty 50 Price Action with VOB Zones', 'Volume'),
-                vertical_spacing=0.03,
-                shared_xaxes=True
-            )
+        fig = make_subplots(
+            rows=3, cols=1,
+            row_heights=[0.6, 0.2, 0.2],
+            subplot_titles=('Nifty 50 Price Action with VOB Zones', 'Volume', 'Ultimate RSI'),
+            vertical_spacing=0.03,
+            shared_xaxes=True
+        )
         
         # Candlestick chart
         fig.add_trace(
@@ -632,42 +495,43 @@ Consider looking for buying opportunities."""
             row=2, col=1
         )
         
-        # Add RSI if available
-        if rsi_data is not None and not rsi_data.empty:
-            # Ultimate RSI line
+        # RSI indicator
+        if 'Ultimate_RSI' in df.columns:
             fig.add_trace(
                 go.Scatter(
-                    x=rsi_data.index,
-                    y=rsi_data['Ultimate_RSI'],
+                    x=df.index,
+                    y=df['Ultimate_RSI'],
                     name='Ultimate RSI',
-                    line=dict(color='#ff7f0e', width=2)
+                    line=dict(color='#ff9900', width=2)
                 ),
                 row=3, col=1
             )
             
-            # RSI Signal line
-            fig.add_trace(
-                go.Scatter(
-                    x=rsi_data.index,
-                    y=rsi_data['Signal'],
-                    name='Signal',
-                    line=dict(color='#1f77b4', width=2)
-                ),
-                row=3, col=1
-            )
+            # Add RSI signal line if available
+            if 'Signal' in df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=df.index,
+                        y=df['Signal'],
+                        name='Signal',
+                        line=dict(color='#00ccff', width=1, dash='dash')
+                    ),
+                    row=3, col=1
+                )
             
-            # Add RSI reference lines
-            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-            fig.add_hline(y=50, line_dash="dot", line_color="white", row=3, col=1)
+            # Add RSI overbought/oversold levels
+            fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.3, row=3, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.3, row=3, col=1)
+            fig.add_hline(y=50, line_dash="solid", line_color="gray", opacity=0.5, row=3, col=1)
         
         # Update layout for TradingView-like appearance
         fig.update_layout(
             title=f"Nifty 50 - {interval} Min Chart with VOB Zones and RSI",
             xaxis_rangeslider_visible=False,
             template='plotly_dark',
-            height=800 if rsi_data is not None else 700,
+            height=800,
             showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             margin=dict(l=0, r=0, t=30, b=0)
         )
         
@@ -716,14 +580,10 @@ Consider looking for buying opportunities."""
             vob_sensitivity = st.slider("VOB Sensitivity", 3, 10, 5)
             
             # RSI Settings
-            st.subheader("RSI Indicator")
+            st.subheader("RSI Settings")
             rsi_enabled = st.checkbox("Enable Ultimate RSI", value=True)
             rsi_length = st.slider("RSI Length", 5, 30, 14)
             rsi_smooth = st.slider("RSI Smoothing", 5, 30, 14)
-            
-            # Option Chain Settings
-            st.subheader("Option Chain Analysis")
-            oi_enabled = st.checkbox("Enable OI Analysis", value=True)
             
             # Telegram Settings
             st.subheader("Telegram Alerts")
@@ -731,11 +591,9 @@ Consider looking for buying opportunities."""
                                          value=bool(self.telegram_bot_token))
             
             if telegram_enabled:
-                st.info(f"VOB Alerts tracked: {len(st.session_state.sent_vob_alerts)}")
-                st.info(f"RSI Alerts tracked: {len(st.session_state.sent_rsi_alerts)}")
+                st.info(f"Alerts tracked: {len(st.session_state.sent_vob_alerts)}")
                 if st.button("Clear Alert History"):
                     st.session_state.sent_vob_alerts.clear()
-                    st.session_state.sent_rsi_alerts.clear()
                     st.success("Alert history cleared!")
                     st.rerun()
             
@@ -759,7 +617,7 @@ Consider looking for buying opportunities."""
         # Fetch and process data
         df = pd.DataFrame()
         vob_zones = []
-        rsi_data = None
+        oi_data = None
         
         if data_source in ["Live API", "Both"]:
             with st.spinner("Fetching live data..."):
@@ -771,25 +629,16 @@ Consider looking for buying opportunities."""
                         # Save to database only if Supabase is available
                         if self.supabase:
                             self.save_to_supabase(df_api, timeframe)
+                
+                # Fetch OI data
+                oi_data = self.fetch_option_chain_data()
         
         if data_source in ["Database", "Both"] and df.empty:
             with st.spinner("Loading from database..."):
                 df = self.load_from_supabase(timeframe)
-        
-        # Fetch option chain data if enabled
-        if oi_enabled:
-            with st.spinner("Fetching option chain data..."):
-                try:
-                    expiry = self.get_nearest_expiry()
-                    if expiry:
-                        self.option_chain_data = self.fetch_option_chain(expiry)
-                        if self.option_chain_data:
-                            ce_oi, pe_oi, bias = self.calculate_oi_trend(self.option_chain_data)
-                            self.oi_sentiment = bias
-                except Exception as e:
-                    st.warning(f"Option chain error: {str(e)}")
-                    self.option_chain_data = None
-                    self.oi_sentiment = None
+                # Calculate RSI for loaded data
+                if not df.empty and rsi_enabled:
+                    df = self.calculate_ultimate_rsi(df, length=rsi_length, smooth=rsi_smooth)
         
         # Calculate VOB zones if enabled and sufficient data
         if vob_enabled and not df.empty and len(df) >= 18:
@@ -799,23 +648,10 @@ Consider looking for buying opportunities."""
                     
                     # Check for new VOB zones and send alerts
                     if telegram_enabled and vob_zones:
-                        self.check_new_vob_zones(vob_zones, rsi_data)
+                        self.check_new_vob_zones(vob_zones)
                 except Exception as e:
                     st.warning(f"VOB calculation error: {str(e)}")
                     vob_zones = []
-        
-        # Calculate RSI if enabled and sufficient data
-        if rsi_enabled and not df.empty and len(df) >= rsi_length:
-            with st.spinner("Calculating Ultimate RSI..."):
-                try:
-                    rsi_data = ultimate_rsi(df.copy(), length=rsi_length, smooth=rsi_smooth)
-                    
-                    # Check for RSI overbought/oversold conditions and send alerts
-                    if telegram_enabled:
-                        self.check_rsi_alerts(rsi_data)
-                except Exception as e:
-                    st.warning(f"RSI calculation error: {str(e)}")
-                    rsi_data = None
         
         # Display metrics
         if not df.empty:
@@ -840,13 +676,50 @@ Consider looking for buying opportunities."""
             with col4:
                 if vob_zones:
                     st.metric("Active VOB Zones", len(vob_zones))
-                elif self.oi_sentiment:
-                    st.metric("OI Sentiment", self.oi_sentiment.split()[0])
-                elif rsi_data is not None:
-                    latest_rsi = rsi_data.iloc[-1]['Ultimate_RSI']
-                    st.metric("Ultimate RSI", f"{latest_rsi:.2f}")
                 else:
                     st.metric("Volume", f"{df['volume'].sum():,}")
+        
+        # OI Data Display
+        if oi_data:
+            st.subheader("📊 Options Open Interest Analysis")
+            oi_col1, oi_col2, oi_col3, oi_col4 = st.columns(4)
+            
+            with oi_col1:
+                st.metric("Call OI Change", f"{oi_data['call_oi_change']:,}")
+            
+            with oi_col2:
+                st.metric("Put OI Change", f"{oi_data['put_oi_change']:,}")
+            
+            with oi_col3:
+                net_oi_change = oi_data['call_oi_change'] - oi_data['put_oi_change']
+                st.metric("Net OI Change", f"{net_oi_change:,}")
+            
+            with oi_col4:
+                pcr_color = "green" if oi_data['pcr'] > 1 else "red"
+                st.metric("Put/Call Ratio", f"{oi_data['pcr']}", delta_color="off")
+        
+        # RSI Data Display
+        if not df.empty and 'Ultimate_RSI' in df.columns:
+            st.subheader("📊 RSI Analysis")
+            rsi_col1, rsi_col2, rsi_col3, rsi_col4 = st.columns(4)
+            
+            current_rsi = df['Ultimate_RSI'].iloc[-1]
+            rsi_signal = "Bullish" if current_rsi > 50 else "Bearish"
+            rsi_color = "green" if current_rsi > 50 else "red"
+            
+            with rsi_col1:
+                st.metric("Current RSI", f"{current_rsi:.2f}", delta_color="off")
+            
+            with rsi_col2:
+                st.metric("RSI Signal", rsi_signal, delta_color="off")
+            
+            with rsi_col3:
+                oversold = "Yes" if current_rsi < 30 else "No"
+                st.metric("Oversold", oversold, delta_color="off")
+            
+            with rsi_col4:
+                overbought = "Yes" if current_rsi > 70 else "No"
+                st.metric("Overbought", overbought, delta_color="off")
         
         # VOB Zone Summary
         if vob_enabled and vob_zones:
@@ -870,59 +743,15 @@ Consider looking for buying opportunities."""
                                  f"Resistance: ₹{zone['highest_price']:.2f}\n"
                                  f"Base: ₹{zone['base_price']:.2f}")
         
-        # RSI Summary
-        if rsi_enabled and rsi_data is not None:
-            st.subheader("📊 RSI Status")
-            latest_rsi = rsi_data.iloc[-1]['Ultimate_RSI']
-            prev_rsi = rsi_data.iloc[-2]['Ultimate_RSI'] if len(rsi_data) > 1 else latest_rsi
-            
-            rsi_status = "🟢 Oversold" if latest_rsi < 30 else "🔴 Overbought" if latest_rsi > 70 else "🟡 Neutral"
-            rsi_trend = "↗️ Rising" if latest_rsi > prev_rsi else "↘️ Falling"
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Ultimate RSI", f"{latest_rsi:.2f}", f"{latest_rsi - prev_rsi:+.2f}")
-            with col2:
-                st.metric("Status", rsi_status)
-            with col3:
-                st.metric("Trend", rsi_trend)
-        
-        # OI Analysis Summary
-        if oi_enabled and self.oi_sentiment and self.option_chain_data:
-            st.subheader("📊 Option Chain Analysis")
-            
-            ce_oi, pe_oi, bias = self.calculate_oi_trend(self.option_chain_data)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Call OI Change", f"{ce_oi:,}")
-            with col2:
-                st.metric("Put OI Change", f"{pe_oi:,}")
-            with col3:
-                st.metric("Market Sentiment", bias)
-            
-            # Display OI ratio - FIXED: Ensure the value is between 0 and 1
-            if pe_oi != 0:
-                oi_ratio = ce_oi / pe_oi
-                # Normalize the ratio to be between 0 and 1 for the progress bar
-                normalized_ratio = min(max(oi_ratio, 0), 2.0) / 2.0
-                st.progress(normalized_ratio, 
-                           text=f"Call/Put OI Ratio: {oi_ratio:.2f}")
-        
         # Create and display chart
         if not df.empty:
-            chart = self.create_candlestick_chart(df, timeframe, vob_zones, rsi_data)
+            chart = self.create_candlestick_chart(df, timeframe, vob_zones, oi_data)
             if chart:
                 st.plotly_chart(chart, use_container_width=True)
             
             # Data table (expandable)
             with st.expander("📊 Raw Data"):
                 st.dataframe(df.tail(50), use_container_width=True)
-                
-            # RSI data table (expandable)
-            if rsi_data is not None:
-                with st.expander("📊 RSI Data"):
-                    st.dataframe(rsi_data.tail(50), use_container_width=True)
         else:
             st.warning("No data available. Please check your API credentials or try refreshing.")
         
