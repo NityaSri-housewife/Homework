@@ -9,21 +9,6 @@ import time
 import pytz
 import numpy as np
 from supabase import create_client, Client
-import telebot
-
-# Function to check if market is open
-def is_market_open():
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-    
-    if now.weekday() > 4:  # Saturday or Sunday
-        return False
-    
-    current_time = now.time()
-    market_open = datetime.strptime('08:30:00', '%H:%M:%S').time()
-    market_close = datetime.strptime('15:45:00', '%H:%M:%S').time()
-    
-    return market_open <= current_time <= market_close
 
 # Supabase configuration
 @st.cache_resource
@@ -31,12 +16,6 @@ def init_supabase():
     url = st.secrets["supabase"]["url"]
     key = st.secrets["supabase"]["key"]
     return create_client(url, key)
-
-# Telegram Bot configuration
-def init_telegram_bot():
-    token = st.secrets["telegram"]["bot_token"]
-    chat_id = st.secrets["telegram"]["chat_id"]
-    return telebot.TeleBot(token), chat_id
 
 # DhanHQ API configuration
 class DhanAPI:
@@ -49,10 +28,12 @@ class DhanAPI:
             "access-token": self.access_token,
             "client-id": self.client_id
         }
+        # Nifty 50 security ID for NSE_EQ
         self.nifty_security_id = "13"
         self.nifty_segment = "IDX_I"
 
     def get_historical_data(self, from_date, to_date, interval="1"):
+        """Fetch intraday historical data"""
         url = f"{self.base_url}/charts/intraday"
         payload = {
             "securityId": self.nifty_security_id,
@@ -66,6 +47,7 @@ class DhanAPI:
         return response.json() if response.status_code == 200 else None
 
     def get_live_quote(self):
+        """Fetch current quote data"""
         url = f"{self.base_url}/marketfeed/quote"
         payload = {
             self.nifty_segment: [self.nifty_security_id]
@@ -77,9 +59,9 @@ class DataManager:
     def __init__(self, supabase: Client):
         self.supabase = supabase
         self.table_name = "nifty_price_data"
-        self.vob_table_name = "vob_signals"
 
     def save_to_db(self, df):
+        """Save DataFrame to Supabase"""
         try:
             df_copy = df.copy()
             df_copy['timestamp'] = df_copy['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -90,7 +72,8 @@ class DataManager:
             st.error(f"Database error: {e}")
             return False
 
-    def load_from_db(self, hours_back=72):  # Changed to 72 hours for 3 days
+    def load_from_db(self, hours_back=24):
+        """Load recent data from Supabase"""
         try:
             cutoff_time = datetime.now() - timedelta(hours=hours_back)
             result = self.supabase.table(self.table_name)\
@@ -100,85 +83,30 @@ class DataManager:
                 .execute()
             
             if result.data:
-                df = pd.DataFrame(result.data)
-                if 'timestamp' in df.columns:
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                return df
-            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                return pd.DataFrame(result.data)
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Database load error: {e}")
-            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    
-    def check_vob_sent(self, vob_type, start_time, base_level):
-        try:
-            result = self.supabase.table(self.vob_table_name)\
-                .select("*")\
-                .eq("vob_type", vob_type)\
-                .eq("start_time", start_time.isoformat())\
-                .eq("base_level", base_level)\
-                .execute()
-            
-            return len(result.data) > 0
-        except Exception as e:
-            st.error(f"Error checking VOB sent status: {e}")
-            return False
-    
-    def mark_vob_sent(self, vob_type, start_time, base_level):
-        try:
-            data = {
-                "vob_type": vob_type,
-                "start_time": start_time.isoformat(),
-                "base_level": base_level,
-                "sent_time": datetime.now().isoformat()
-            }
-            result = self.supabase.table(self.vob_table_name).insert(data).execute()
-            return True
-        except Exception as e:
-            st.error(f"Error marking VOB as sent: {e}")
-            return False
+            return pd.DataFrame()
 
 def process_historical_data(data, interval):
+    """Convert API response to DataFrame"""
     if not data or 'open' not in data:
         return pd.DataFrame()
     
+    # Convert to Indian timezone
     ist = pytz.timezone('Asia/Kolkata')
     
-    try:
-        if 'timestamp' in data and len(data['timestamp']) > 0:
-            try:
-                timestamps = pd.to_datetime(data['timestamp'], unit='s')
-            except (ValueError, TypeError):
-                try:
-                    timestamps = pd.to_datetime(data['timestamp'])
-                except (ValueError, TypeError):
-                    n_periods = len(data['open'])
-                    end_time = datetime.now(ist)
-                    start_time = end_time - timedelta(minutes=n_periods * int(interval))
-                    timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
-            
-            if timestamps.tz is None:
-                timestamps = timestamps.tz_localize('UTC').tz_convert(ist)
-            else:
-                timestamps = timestamps.tz_convert(ist)
-        else:
-            n_periods = len(data['open'])
-            end_time = datetime.now(ist)
-            start_time = end_time - timedelta(minutes=n_periods * int(interval))
-            timestamps = pd.date_range(start=start_time, end=end_time, periods=n_periods, tz=ist)
-        
-        df = pd.DataFrame({
-            'timestamp': timestamps,
-            'open': data['open'],
-            'high': data['high'],
-            'low': data['low'],
-            'close': data['close'],
-            'volume': data['volume']
-        })
-        
-    except Exception as e:
-        st.error(f"Error processing historical data: {e}")
-        return pd.DataFrame()
+    df = pd.DataFrame({
+        'timestamp': pd.to_datetime(data['timestamp'], unit='s').dt.tz_localize('UTC').dt.tz_convert(ist),
+        'open': data['open'],
+        'high': data['high'],
+        'low': data['low'],
+        'close': data['close'],
+        'volume': data['volume']
+    })
     
+    # Convert to specified timeframe if needed
     if interval != "1":
         df.set_index('timestamp', inplace=True)
         df = df.resample(f'{interval}T').agg({
@@ -192,11 +120,14 @@ def process_historical_data(data, interval):
     return df
 
 def calculate_vob_indicator(df, length1=5):
+    """Calculate VOB (Volume Order Block) indicator"""
     df = df.copy()
     
+    # Calculate EMAs
     df['ema1'] = df['close'].ewm(span=length1).mean()
     df['ema2'] = df['close'].ewm(span=length1 + 13).mean()
     
+    # Calculate ATR
     df['tr'] = np.maximum(
         df['high'] - df['low'],
         np.maximum(
@@ -206,6 +137,7 @@ def calculate_vob_indicator(df, length1=5):
     )
     df['atr'] = df['tr'].rolling(200).mean() * 3
     
+    # Calculate crossovers
     df['ema1_prev'] = df['ema1'].shift(1)
     df['ema2_prev'] = df['ema2'].shift(1)
     df['cross_up'] = (df['ema1'] > df['ema2']) & (df['ema1_prev'] <= df['ema2_prev'])
@@ -215,6 +147,7 @@ def calculate_vob_indicator(df, length1=5):
     
     for idx in range(len(df)):
         if df.iloc[idx]['cross_up']:
+            # Find lowest in last length1+13 periods
             start_idx = max(0, idx - (length1 + 13))
             period_data = df.iloc[start_idx:idx+1]
             lowest_val = period_data['low'].min()
@@ -233,11 +166,11 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[lowest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'low_level': lowest_val,
-                    'crossover_time': df.iloc[idx]['timestamp']
+                    'low_level': lowest_val
                 })
         
         elif df.iloc[idx]['cross_dn']:
+            # Find highest in last length1+13 periods
             start_idx = max(0, idx - (length1 + 13))
             period_data = df.iloc[start_idx:idx+1]
             highest_val = period_data['high'].max()
@@ -256,38 +189,11 @@ def calculate_vob_indicator(df, length1=5):
                     'start_time': df.iloc[highest_idx]['timestamp'],
                     'end_time': df.iloc[idx]['timestamp'],
                     'base_level': base,
-                    'high_level': highest_val,
-                    'crossover_time': df.iloc[idx]['timestamp']
+                    'high_level': highest_val
                 })
     
     return vob_zones
-
-def send_telegram_alert(bot, chat_id, vob_zone, current_price):
-    try:
-        if vob_zone['type'] == 'bullish':
-            message = f"🚨 *VOB ALARM - BULLISH FORMATION* 🚨\n\n"
-            message += f"*Signal:* BUY/CALL ENTRY\n"
-            message += f"*Base Level:* {vob_zone['base_level']:.2f}\n"
-            message += f"*Low Level:* {vob_zone['low_level']:.2f}\n"
-            message += f"*Current Price:* {current_price:.2f}\n"
-            message += f"*Formation Time:* {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S IST')}\n\n"
-            message += f"*Action:* Consider long entry above base level"
-        else:
-            message = f"🚨 *VOB ALARM - BEARISH FORMATION* 🚨\n\n"
-            message += f"*Signal:* SELL/PUT ENTRY\n"
-            message += f"*Base Level:* {vob_zone['base_level']:.2f}\n"
-            message += f"*High Level:* {vob_zone['high_level']:.2f}\n"
-            message += f"*Current Price:* {current_price:.2f}\n"
-            message += f"*Formation Time:* {vob_zone['crossover_time'].strftime('%Y-%m-%d %H:%M:%S IST')}\n\n"
-            message += f"*Action:* Consider short entry below base level"
-        
-        bot.send_message(chat_id, message, parse_mode="Markdown")
-        return True
-    except Exception as e:
-        st.error(f"Error sending Telegram message: {e}")
-        return False
-
-def create_candlestick_chart(df, timeframe, vob_zones=None):
+    """Create TradingView-style candlestick chart"""
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -296,6 +202,7 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
         row_width=[0.2, 0.7]
     )
     
+    # Candlestick chart
     fig.add_trace(
         go.Candlestick(
             x=df['timestamp'],
@@ -310,51 +217,7 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
         row=1, col=1
     )
     
-    if vob_zones:
-        for zone in vob_zones:
-            if zone['type'] == 'bullish':
-                fig.add_shape(
-                    type="rect",
-                    x0=zone['start_time'],
-                    x1=zone['end_time'],
-                    y0=zone['low_level'],
-                    y1=zone['base_level'],
-                    line=dict(width=2, color='green'),
-                    fillcolor="rgba(0, 255, 0, 0.3)",
-                    row=1, col=1
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=[zone['start_time'], zone['end_time']],
-                        y=[zone['base_level'], zone['base_level']],
-                        mode='lines',
-                        line=dict(color='green', width=4, dash='solid'),
-                        name='VOB Base'
-                    ),
-                    row=1, col=1
-                )
-            else:
-                fig.add_shape(
-                    type="rect",
-                    x0=zone['start_time'],
-                    x1=zone['end_time'],
-                    y0=zone['base_level'],
-                    y1=zone['high_level'],
-                    line=dict(width=2, color='red'),
-                    fillcolor="rgba(255, 0, 0, 0.3)",
-                    row=1, col=1
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=[zone['start_time'], zone['end_time']],
-                        y=[zone['base_level'], zone['base_level']],
-                        mode='lines',
-                        line=dict(color='red', width=4, dash='solid'),
-                        name='VOB Base'
-                    ),
-                    row=1, col=1
-                )
-    
+    # Volume chart
     colors = ['#26a69a' if close >= open else '#ef5350' 
               for close, open in zip(df['close'], df['open'])]
     
@@ -369,8 +232,9 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
         row=2, col=1
     )
     
+    # Update layout
     fig.update_layout(
-        title=f"Nifty 50 - {timeframe} Min Chart (3 Days)" + (" with VOB Zones" if vob_zones else ""),
+        title=f"Nifty 50 - {timeframe} Min Chart",
         xaxis_title="Time",
         yaxis_title="Price",
         template="plotly_dark",
@@ -384,59 +248,17 @@ def create_candlestick_chart(df, timeframe, vob_zones=None):
     
     return fig
 
-def fetch_fresh_data(dhan_api, data_manager, timeframe_value):
-    # Calculate 3 days of data
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=3)
-    
-    data = dhan_api.get_historical_data(
-        start_date.strftime("%Y-%m-%d %H:%M:%S"),
-        end_date.strftime("%Y-%m-%d %H:%M:%S"),
-        timeframe_value
-    )
-    
-    if data:
-        df = process_historical_data(data, timeframe_value)
-        if not df.empty:
-            st.session_state.chart_data = df
-            data_manager.save_to_db(df)
-            return df
-    
-    return None
-
 def main():
-    st.set_page_config(page_title="Nifty Auto-Refresh Chart", layout="wide")
-    
-    # Initialize session state
-    if 'last_refresh' not in st.session_state:
-        st.session_state.last_refresh = datetime.now()
-    if 'chart_data' not in st.session_state:
-        st.session_state.chart_data = None
-    if 'refresh_counter' not in st.session_state:
-        st.session_state.refresh_counter = 0
-    
-    # Check if market is open
-    if not is_market_open():
-        st.title("🔴 Market is Closed")
-        st.info("Trading hours: Monday to Friday, 8:30 AM to 3:45 PM IST.")
-        return
-    
-    st.title("📈 Nifty 50 Auto-Refresh Chart (3 Days)")
+    st.set_page_config(page_title="Nifty Price Action Chart", layout="wide")
+    st.title("Nifty 50 Price Action Chart")
     
     # Initialize components
     dhan_api = DhanAPI()
     supabase = init_supabase()
     data_manager = DataManager(supabase)
     
-    # Initialize Telegram bot
-    try:
-        telegram_bot, chat_id = init_telegram_bot()
-        telegram_enabled = True
-    except:
-        telegram_enabled = False
-    
-    # Minimal sidebar
-    st.sidebar.header("Settings")
+    # Sidebar controls
+    st.sidebar.header("Chart Settings")
     
     timeframes = {
         "1 Min": "1",
@@ -446,55 +268,80 @@ def main():
     }
     
     selected_timeframe = st.sidebar.selectbox(
-        "Timeframe", 
+        "Select Timeframe", 
         list(timeframes.keys()),
-        index=1
+        index=1  # Default to 3 Min
     )
     
+    hours_back = st.sidebar.slider("Hours of Data", 1, 24, 6)
+    
+    st.sidebar.header("VOB Indicator")
     vob_sensitivity = st.sidebar.slider("VOB Sensitivity", 3, 10, 5)
     show_vob = st.sidebar.checkbox("Show VOB Zones", value=True)
     
-    if telegram_enabled:
-        telegram_alerts = st.sidebar.checkbox("Telegram Alerts", value=True)
-        if telegram_alerts:
-            st.sidebar.success("🔔 Alerts ON")
-    else:
-        telegram_alerts = False
+    auto_refresh = st.sidebar.checkbox("Auto Refresh (30s)", value=True)
     
-    # Auto-refresh logic (every 25 seconds)
-    now = datetime.now()
-    elapsed = (now - st.session_state.last_refresh).total_seconds()
+    # Main content area
+    col1, col2 = st.columns([3, 1])
     
-    if elapsed >= 25:
-        st.session_state.last_refresh = now
-        st.session_state.refresh_counter += 1
+    with col2:
+        st.subheader("Controls")
         
-        with st.spinner("🔄 Auto-refreshing..."):
-            df = fetch_fresh_data(dhan_api, data_manager, timeframes[selected_timeframe])
-            if df is not None:
-                st.success(f"✅ Refreshed: {len(df)} candles | Count: {st.session_state.refresh_counter}")
-        st.rerun()
-    else:
-        remaining = 25 - int(elapsed)
-        st.sidebar.info(f"⏱️ Next refresh: {remaining}s")
-    
-    # Load and display chart
-    if st.session_state.chart_data is not None:
-        df = st.session_state.chart_data
-    else:
-        df = data_manager.load_from_db(72)  # 3 days = 72 hours
-    
-    if not df.empty:
-        if 'timestamp' not in df.columns:
-            st.error("Timestamp column missing")
-            return
+        if st.button("Fetch Fresh Data"):
+            with st.spinner("Fetching data..."):
+                # Calculate date range
+                end_date = datetime.now()
+                start_date = end_date - timedelta(hours=hours_back)
+                
+                # Fetch from API
+                data = dhan_api.get_historical_data(
+                    start_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    end_date.strftime("%Y-%m-%d %H:%M:%S"),
+                    timeframes[selected_timeframe]
+                )
+                
+                if data:
+                    df = process_historical_data(data, timeframes[selected_timeframe])
+                    if not df.empty:
+                        # Store in session state and database
+                        st.session_state.chart_data = df
+                        data_manager.save_to_db(df)
+                        st.success(f"Fetched {len(df)} candles")
+                        st.rerun()
+                    else:
+                        st.warning("No data received")
+                else:
+                    st.error("API request failed")
         
-        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-        df = df.dropna(subset=['timestamp'])
+        # Live quote section
+        st.subheader("Live Quote")
+        live_placeholder = st.empty()
         
-        # Apply timeframe grouping
-        if timeframes[selected_timeframe] != "1" and len(df) > 1:
-            try:
+        if st.button("Get Live Price"):
+            quote_data = dhan_api.get_live_quote()
+            if quote_data and 'data' in quote_data:
+                nifty_data = quote_data['data'][dhan_api.nifty_segment][dhan_api.nifty_security_id]
+                live_placeholder.metric(
+                    "Nifty 50",
+                    f"₹{nifty_data['last_price']:.2f}",
+                    f"{nifty_data['net_change']:.2f}"
+                )
+    
+    with col1:
+        # Load and display chart
+        df = data_manager.load_from_db(hours_back)
+        
+        # Check session state for fresh data
+        if 'chart_data' in st.session_state:
+            df = st.session_state.chart_data
+        
+        if not df.empty:
+            # Ensure timestamp is datetime
+            if 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            # Apply timeframe grouping if needed
+            if timeframes[selected_timeframe] != "1":
                 df.set_index('timestamp', inplace=True)
                 df = df.resample(f'{timeframes[selected_timeframe]}T').agg({
                     'open': 'first',
@@ -503,64 +350,32 @@ def main():
                     'close': 'last',
                     'volume': 'sum'
                 }).dropna().reset_index()
-            except Exception as e:
-                st.error(f"Error resampling: {e}")
-        
-        # Calculate VOB zones
-        vob_zones = None
-        if show_vob and len(df) > 50:
-            try:
-                vob_zones = calculate_vob_indicator(df, vob_sensitivity)
+            
+            # Create and display chart
+            fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_sensitivity if show_vob else None)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Display stats
+            if len(df) > 0:
+                latest = df.iloc[-1]
+                col1_stats, col2_stats, col3_stats, col4_stats = st.columns(4)
                 
-                # Send Telegram alerts
-                if telegram_enabled and telegram_alerts and vob_zones:
-                    current_price = df.iloc[-1]['close']
-                    latest_zone = vob_zones[-1] if vob_zones else None
-                    
-                    if latest_zone and (datetime.now(pytz.UTC) - latest_zone['crossover_time'].replace(tzinfo=pytz.UTC)) < timedelta(minutes=5):
-                        if not data_manager.check_vob_sent(
-                            latest_zone['type'], 
-                            latest_zone['start_time'], 
-                            latest_zone['base_level']
-                        ):
-                            if send_telegram_alert(telegram_bot, chat_id, latest_zone, current_price):
-                                data_manager.mark_vob_sent(
-                                    latest_zone['type'], 
-                                    latest_zone['start_time'], 
-                                    latest_zone['base_level']
-                                )
-                                st.success(f"📱 Sent {latest_zone['type']} VOB alert")
-            
-            except Exception as e:
-                st.error(f"VOB calculation error: {e}")
-        
-        # Display chart
-        fig = create_candlestick_chart(df, selected_timeframe.split()[0], vob_zones)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Display stats
-        if len(df) > 0:
-            latest = df.iloc[-1]
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Open", f"₹{latest['open']:.2f}")
-            with col2:
-                st.metric("High", f"₹{latest['high']:.2f}")
-            with col3:
-                st.metric("Low", f"₹{latest['low']:.2f}")
-            with col4:
-                st.metric("Close", f"₹{latest['close']:.2f}")
-            
-            # Show data range
-            st.info(f"📊 Data Range: {df['timestamp'].min().strftime('%Y-%m-%d %H:%M')} to {df['timestamp'].max().strftime('%Y-%m-%d %H:%M')} | Total Candles: {len(df)}")
+                with col1_stats:
+                    st.metric("Open", f"₹{latest['open']:.2f}")
+                with col2_stats:
+                    st.metric("High", f"₹{latest['high']:.2f}")
+                with col3_stats:
+                    st.metric("Low", f"₹{latest['low']:.2f}")
+                with col4_stats:
+                    st.metric("Close", f"₹{latest['close']:.2f}")
+                
+        else:
+            st.info("No data available. Click 'Fetch Fresh Data' to load historical data.")
     
-    else:
-        st.warning("⚠️ No data available. Waiting for next refresh...")
-    
-    # Force auto-refresh
-    time.sleep(1)
-    st.rerun()
+    # Auto refresh functionality
+    if auto_refresh:
+        time.sleep(30)
+        st.rerun()
 
 if __name__ == "__main__":
     main()
